@@ -65,10 +65,10 @@ async def add_to_channels(entity, account_id, connection, metadata):
 
     # Проверка, есть ли уже такая запись в таблице channels:
     query = select(channels).where(
-                                    and_(
-                                        channels.c.channel == entity.id,
-                                        channels.c.account_id == account_id)
-                                    )
+        and_(
+            channels.c.channel == entity.id,
+            channels.c.account_id == account_id)
+    )
     record_exists = connection.execute(query).fetchone()
     if not record_exists:  # Если записи не существует, то добавляем её
 
@@ -160,9 +160,9 @@ async def file_download(message, dialog, client, account_id, connection, metadat
         files = json.dumps(files)
 
         connection.execute(update(table_messages).where(and_(
-                                                            table_messages.c.message_id == message.id,
-                                                            table_messages.c.channel_id == dialog.entity.id)
-                                                        ).values(files=files))
+            table_messages.c.message_id == message.id,
+            table_messages.c.channel_id == dialog.entity.id)
+        ).values(files=files))
         print("Информация о файле занесена")
 
 
@@ -276,17 +276,17 @@ async def get_dialogs(account_id, connection, metadata):
 
         # last_check_date - время последнего обновления сообщений диалога (берётся из канала channels):
         query = select([channels.c.lst_msgs_upd]).where(and_(
-                                                            channels.c.channel == dialog.entity.id,
-                                                            channels.c.account_id == account_id)
-                                                            )
+            channels.c.channel == dialog.entity.id,
+            channels.c.account_id == account_id)
+        )
         answer_from_db = connection.execute(query).fetchone()[0]
         last_check_date = answer_from_db if answer_from_db else datetime(1982, 11, 5)
         print(dialog.name)
         # Заносим новое время обновления сообщений диалога в таблицу channels
         connection.execute(update(channels).where(and_(
-                                                        channels.c.channel == dialog.entity.id,
-                                                        channels.c.account_id == account_id)
-                                                        ).values(lst_msgs_upd=datetime.now()))
+            channels.c.channel == dialog.entity.id,
+            channels.c.account_id == account_id)
+        ).values(lst_msgs_upd=datetime.now()))
         async for message in client.iter_messages(dialog):
             msg_date = message.date.replace(tzinfo=timezone.utc).astimezone(tz=None)
             if msg_date.timestamp() > last_check_date.timestamp():  # Если дата сообщения > даты последней проверки сообщений, то скачиваем его
@@ -470,6 +470,7 @@ async def main():
     # --------------------------------------------------
     print('Подключение к БД')
     host = os.environ.get('HOST')
+    # user = 'root'
     user = os.environ.get('USERNAME')
     password = os.environ.get('PASSWORD')
     database = os.environ.get('DATABASE')
@@ -483,36 +484,87 @@ async def main():
 
         # Отслеживание команд в таблице commands из БД:
         # --------------------------------------------------
+        commands_list = []
         commands = Table('commands', metadata)  # связываем переменную commands с таблицей 'commands' из БД
-        query = commands.select()
-        commands_list = connection.execute(query)  # Создаем список команд, скаченных из БД
+        try:
+            query = commands.select().where(commands.c.status == 0)  # Выбираем из БД команды со status=0 (новые)
+            commands_list = connection.execute(query)  # Создаем список команд, скаченных из БД
+        except:
+            print('Не удалось получить данные из таблицы commands базы данных. Попытка повторится в следующем цикле.')
         if commands_list:  # Если список не пустой (в БД были команды), то отправляем команды на выполнение:
             for command in commands_list:
                 command_id = command[0]
                 command_name = command[1]
                 account_id = command[2]
                 command_args = command[3]
+                # Перевод команды в status=3 (в процессе выполнения):
+                connection.execute(update(commands).where(commands.c.id == command_id).values(status=3))
                 # -------------
                 if command_name == 'login':
-                    await login(account_id, connection, metadata)
+                    try:
+                        await login(account_id, connection, metadata)
+                        # Перевод команды в status=1 (выполнена):
+                        connection.execute(update(commands).where(commands.c.id == command_id).values(status=1))
+                    except:
+                        print(f'При выполнении команды {command_name} для аккаунта с id={account_id} возникли проблемы')
+                        # Перевод команды в status=2 (возникла проблема):
+                        connection.execute(update(commands).where(commands.c.id == command_id).values(status=2))
                 elif command_name == 'get_avatars':
-                    await get_avatars(account_id, connection, metadata)
+                    try:
+                        await get_avatars(account_id, connection, metadata)
+                        # Перевод команды в status=1 (выполнена):
+                        connection.execute(update(commands).where(commands.c.id == command_id).values(status=1))
+                    except:
+                        print(f'При выполнении команды {command_name} для аккаунта с id={account_id} возникли проблемы')
+                        # Перевод команды в status=2 (возникла проблема):
+                        connection.execute(update(commands).where(commands.c.id == command_id).values(status=2))
                 elif command_name == 'get_all':
-                    await get_all(account_id, connection, metadata)
+                    try:
+                        await get_all(account_id, connection, metadata)
+                        # Перевод команды в status=1 (выполнена):
+                        connection.execute(update(commands).where(commands.c.id == command_id).values(status=1))
+                    except:
+                        print(f'При выполнении команды {command_name} для аккаунта с id={account_id} возникли проблемы')
+                        # Перевод команды в status=2 (возникла проблема):
+                        connection.execute(update(commands).where(commands.c.id == command_id).values(status=2))
                 elif command_name == 'get_contacts':
-                    await get_contacts(account_id, connection, metadata)
+                    try:
+                        await get_contacts(account_id, connection, metadata)
+                        # Перевод команды в status=1 (выполнена):
+                        connection.execute(update(commands).where(commands.c.id == command_id).values(status=1))
+                    except:
+                        print(f'При выполнении команды {command_name} для аккаунта с id={account_id} возникли проблемы')
+                        # Перевод команды в status=2 (возникла проблема):
+                        connection.execute(update(commands).where(commands.c.id == command_id).values(status=2))
                 elif command_name == 'get_dialogs':
-                    await get_dialogs(account_id, connection, metadata)
+                    try:
+                        await get_dialogs(account_id, connection, metadata)
+                        # Перевод команды в status=1 (выполнена):
+                        connection.execute(update(commands).where(commands.c.id == command_id).values(status=1))
+                    except:
+                        print(f'При выполнении команды {command_name} для аккаунта с id={account_id} возникли проблемы')
+                        # Перевод команды в status=2 (возникла проблема):
+                        connection.execute(update(commands).where(commands.c.id == command_id).values(status=2))
                 elif command_name == 'get_big_files':
-                    await get_big_files(account_id, connection, metadata)
+                    try:
+                        await get_big_files(account_id, connection, metadata)
+                        # Перевод команды в status=1 (выполнена):
+                        connection.execute(update(commands).where(commands.c.id == command_id).values(status=1))
+                    except:
+                        print(f'При выполнении команды {command_name} для аккаунта с id={account_id} возникли проблемы')
+                        # Перевод команды в status=2 (возникла проблема):
+                        connection.execute(update(commands).where(commands.c.id == command_id).values(status=2))
                 elif command_name == 'send_message':
-                    send_message(account_id, command_args, connection, metadata)
-                    await finish_send(account_id, connection, metadata)
-                elif command_name == 'finish_send':
-                    await finish_send(account_id, connection, metadata)
+                    try:
+                        send_message(account_id, command_args, connection, metadata)
+                        await finish_send(account_id, connection, metadata)
+                        # Перевод команды в status=1 (выполнена):
+                        connection.execute(update(commands).where(commands.c.id == command_id).values(status=1))
+                    except:
+                        print(f'При выполнении команды {command_name} для аккаунта с id={account_id} возникли проблемы')
+                        # Перевод команды в status=2 (возникла проблема):
+                        connection.execute(update(commands).where(commands.c.id == command_id).values(status=2))
                 # -------------
-                # Удаление выполненной команды из БД:
-                connection.execute(delete(commands).where(commands.c.id == command_id))
         print('Цикл поиска команд завершен')
         # --------------------------------------------------
 
@@ -525,7 +577,10 @@ async def main():
             for account in active_accounts:
                 print(f'Аккаунт с id={account[0]} и name = {account[1]} активен. Начинается проверка новых сообщений.')
                 account_id = account[0]
-                await get_dialogs(account_id, connection, metadata)
+                try:
+                    await get_dialogs(account_id, connection, metadata)
+                except:
+                    print(f'При поиске новых сообщений для аккаунта с id={account_id} возникли проблемы')
         print('Цикл поиска новых сообщений для активных аккаунтов завершен')
         # --------------------------------------------------
 
