@@ -15,40 +15,46 @@ from telethon.errors import SessionPasswordNeededError, MediaInvalidError
 
 
 # Авторизация пользователя в Телеграм
-async def login(account_id, connection, metadata):
+async def login(account_id, connection, metadata, command_id):
     accounts = Table('accounts', metadata)
-    connection.execute(update(accounts).where(accounts.c.id == account_id).values(status=3))  # перевод аккаунта в status=3 (идет процесс логина)
+    commands = Table('commands', metadata)
     client = await connect_to_telegram(account_id)
-    await client.connect()
-    # Если не авторизованы в Telegram, то авторизируемся:
-    if not await client.is_user_authorized():
-        phone = '+' + connection.execute(select([accounts.c.phone]).where(accounts.c.id == account_id)).fetchone()[0]
-        await client.send_code_request(phone)
-        connection.execute(update(accounts).where(accounts.c.id == account_id).values(status=4))
-        try:
-            print('Ожидание кода из базы данных в течение 60 секунд...')
-            for i in range(10):  # Ждём 10 раз по 6 сек, чтобы получить код из БД
-                time.sleep(6)
-                code = connection.execute(select([accounts.c.code]).where(accounts.c.id == account_id)).fetchone()[0]
-                if code:
-                    await client.sign_in(phone, code)  # Отправляем Телеграму код
-                    # и удаляем этот код в таблице accounts:
-                    connection.execute(update(accounts).where(accounts.c.id == account_id).values(code=None))
-                    break
-                if i == 9:
-                    print('Ожидание кода завершено безрезультатно. Нужно запустить авторизацию повторно.')
-                    connection.execute(update(accounts).where(accounts.c.id == account_id).values(status=3))  # перевод аккаунта в status=3 (идет процесс логина)
-        except SessionPasswordNeededError:  # Если стоит двухфакторная верификация
-            await client.sign_in(password=input('У вас двухфакторная верификация. Введите свой пароль:'))
-    if await (client.is_user_authorized()):
-        print('Login to Telegram completed successfully')
-        print('У вас есть 60 секунд, если хотите запустить скачивание всех каналов ()')
-        time.sleep(60)  # Задержка времени, чтобы успеть запустить скачивание всех диалогов
-        connection.execute(update(accounts).where(accounts.c.id == account_id).values(status=1))
-        await client.disconnect()
-    else:
-        print('Login to Telegram failed')
-        await client.disconnect()
+    try:
+        connection.execute(update(accounts).where(accounts.c.id == account_id).values(status=3))  # перевод аккаунта в status=3 (идет процесс логина)
+        await client.connect()
+        # Если не авторизованы в Telegram, то авторизируемся:
+        if not await client.is_user_authorized():
+            phone = '+' + connection.execute(select([accounts.c.phone]).where(accounts.c.id == account_id)).fetchone()[0]
+            await client.send_code_request(phone)
+            connection.execute(update(accounts).where(accounts.c.id == account_id).values(status=4))
+            try:
+                print('Ожидание кода из базы данных в течение 60 секунд...')
+                for i in range(10):  # Ждём 10 раз по 6 сек, чтобы получить код из БД
+                    time.sleep(6)
+                    code = connection.execute(select([accounts.c.code]).where(accounts.c.id == account_id)).fetchone()[0]
+                    if code:
+                        await client.sign_in(phone, code)  # Отправляем Телеграму код
+                        # и удаляем этот код в таблице accounts:
+                        connection.execute(update(accounts).where(accounts.c.id == account_id).values(code=None))
+                        break
+                    if i == 9:
+                        print('Ожидание кода завершено безрезультатно. Нужно запустить авторизацию повторно.')
+                        connection.execute(update(accounts).where(accounts.c.id == account_id).values(status=3))  # перевод аккаунта в status=3 (идет процесс логина)
+            except SessionPasswordNeededError:  # Если стоит двухфакторная верификация
+                await client.sign_in(password=input('У вас двухфакторная верификация. Введите свой пароль:'))
+        if await (client.is_user_authorized()):
+            print('Login to Telegram completed successfully')
+            # Перевод аккаунта в status=1 (аккаунт активен):
+            connection.execute(update(accounts).where(accounts.c.id == account_id).values(status=1))
+            # Перевод команды в status=1 (команда выполнена):
+            connection.execute(update(commands).where(commands.c.id == command_id).values(status=1))
+        else:
+            print('Login to Telegram failed')
+    except:
+        print(f'При выполнении команды login для аккаунта с id={account_id} возникли проблемы')
+        # Перевод команды в status=2 (возникла проблема):
+        connection.execute(update(commands).where(commands.c.id == command_id).values(status=2))
+    await client.disconnect()
 
 
 # Устанавление соединения с Telegram
@@ -195,271 +201,336 @@ async def avatar_download(entity, client, connection, metadata):
 
 
 # Скачивание всех аватарок на сервер
-async def get_avatars(account_id, connection, metadata):
+async def get_avatars(account_id, connection, metadata, command_id):
+    commands = Table('commands', metadata)
     client = await connect_to_telegram(account_id)
-    await client.connect()
-    async for dialog in client.iter_dialogs():
-        entity = dialog.entity
-        await avatar_download(entity, client, connection, metadata)
+    try:
+        await client.connect()
+        async for dialog in client.iter_dialogs():
+            entity = dialog.entity
+            await avatar_download(entity, client, connection, metadata)
+        # Перевод команды в status=1 (команда выполнена):
+        connection.execute(update(commands).where(commands.c.id == command_id).values(status=1))
+    except:
+        print(f'При выполнении команды get_avatars для аккаунта с id={account_id} возникли проблемы')
+        # Перевод команды в status=2 (возникла проблема):
+        connection.execute(update(commands).where(commands.c.id == command_id).values(status=2))
     await client.disconnect()
 
 
 # Добавление ВСЕХ диалогов (с человеком или ботом), чатов и каналов пользователя в таблицу channels базы данных
-async def get_all(account_id, connection, metadata):
+async def get_all(account_id, connection, metadata, command_id):
+    commands = Table('commands', metadata)
     client = await connect_to_telegram(account_id)
-    await client.connect()
-    async for dialog in client.iter_dialogs():
-        entity = dialog.entity
-        await add_to_channels(entity, account_id, connection, metadata)
-        await avatar_download(entity, client, connection, metadata)  # Скачивание (обновление) аватара:
+    try:
+        await client.connect()
+        async for dialog in client.iter_dialogs():
+            entity = dialog.entity
+            await add_to_channels(entity, account_id, connection, metadata)
+            await avatar_download(entity, client, connection, metadata)  # Скачивание (обновление) аватара
+        # Перевод команды в status=1 (команда выполнена):
+        connection.execute(update(commands).where(commands.c.id == command_id).values(status=1))
+    except:
+        print(f'При выполнении команды get_all для аккаунта с id={account_id} возникли проблемы')
+        # Перевод команды в status=2 (возникла проблема):
+        connection.execute(update(commands).where(commands.c.id == command_id).values(status=2))
     await client.disconnect()
 
 
 # Добавление только контактов пользователя в БД в таблицу messenger_users
-async def get_contacts(account_id, connection, metadata):
+async def get_contacts(account_id, connection, metadata, command_id):
+    commands = Table('commands', metadata)
     client = await connect_to_telegram(account_id)
-    await client.connect()
-    dialogs = await client.get_dialogs()
+    try:
+        await client.connect()
+        dialogs = await client.get_dialogs()
 
-    #  Создание списка диалогов, состоящих только из контактов пользователя:
-    dialogs_of_contacts = list(filter(lambda x: isinstance(x.entity, User) and x.entity.contact, dialogs))
+        #  Создание списка диалогов, состоящих только из контактов пользователя:
+        dialogs_of_contacts = list(filter(lambda x: isinstance(x.entity, User) and x.entity.contact, dialogs))
 
-    for dialog in dialogs_of_contacts:
-        contact = dialog.entity
+        for dialog in dialogs_of_contacts:
+            contact = dialog.entity
 
-        # Определение значения колонки status для таблицы messenger_users:
-        status = 0  # 0 - Online, 1 - Offline, 2 - Recently, 3 - Last week, 4 - Last Month
-        if isinstance(contact.status, UserStatusOffline):
-            status = 1
-        elif isinstance(contact.status, UserStatusRecently):
-            status = 2
-        elif isinstance(contact.status, UserStatusLastWeek):
-            status = 3
-        elif isinstance(contact.status, UserStatusLastMonth):
-            status = 4
+            # Определение значения колонки status для таблицы messenger_users:
+            status = 0  # 0 - Online, 1 - Offline, 2 - Recently, 3 - Last week, 4 - Last Month
+            if isinstance(contact.status, UserStatusOffline):
+                status = 1
+            elif isinstance(contact.status, UserStatusRecently):
+                status = 2
+            elif isinstance(contact.status, UserStatusLastWeek):
+                status = 3
+            elif isinstance(contact.status, UserStatusLastMonth):
+                status = 4
 
-        # Создание комманды в БД на добавление записи в таблицу messenger_users:
-        messenger_users = Table('messenger_users', metadata)
-        query = insert(messenger_users).values(
-            peer_id = contact.id,
-            first_name=contact.first_name,
-            last_name=contact.last_name,
-            photo_id=contact.photo.photo_id if contact.photo else None,
-            username=contact.username,
-            status=status,
-            created_at=datetime.now()
-        )
-        connection.execute(query)  # Отправление команды в БД
+            # Создание комманды в БД на добавление записи в таблицу messenger_users:
+            messenger_users = Table('messenger_users', metadata)
+            query = insert(messenger_users).values(
+                peer_id = contact.id,
+                first_name=contact.first_name,
+                last_name=contact.last_name,
+                photo_id=contact.photo.photo_id if contact.photo else None,
+                username=contact.username,
+                status=status,
+                created_at=datetime.now()
+            )
+            connection.execute(query)  # Отправление команды в БД
 
-        await avatar_download(contact, client, connection, metadata)  # Скачивание (обновление) аватара:
-
+            await avatar_download(contact, client, connection, metadata)  # Скачивание (обновление) аватара:
+        # Перевод команды в status=1 (выполнена):
+        connection.execute(update(commands).where(commands.c.id == command_id).values(status=1))
+    except:
+        print(f'При выполнении команды get_contacts для аккаунта с id={account_id} возникли проблемы')
+        # Перевод команды в status=2 (возникла проблема):
+        connection.execute(update(commands).where(commands.c.id == command_id).values(status=2))
     await client.disconnect()
 
 
 # Скачивание сообщений из всех диалогов в БД в таблицу messages
-async def get_dialogs(account_id, connection, metadata):
+async def get_dialogs(account_id, connection, metadata, command_id=None):
+    commands = Table('commands', metadata)
     client = await connect_to_telegram(account_id)
-    await client.connect()
-    accounts = Table('accounts', metadata)
-    table_messages = Table('messages', metadata)
-    channels = Table('channels', metadata)
-    start_time = datetime.now()
+    try:
+        await client.connect()
+        accounts = Table('accounts', metadata)
+        table_messages = Table('messages', metadata)
+        channels = Table('channels', metadata)
+        start_time = datetime.now()
 
-    async for dialog in client.iter_dialogs():
+        async for dialog in client.iter_dialogs():
 
-        # Провекрка занесен ли канал, из которого мы скачиваем сообщения, в БД в таблицу channels:
-        channel_id = connection.execute(select([channels.c.id]).where(channels.c.channel == dialog.entity.id)).fetchone()
-        if not channel_id:  # Если канала в БД нет, то добавляем его в таблицу channels
-            print(f'Канала с id={dialog.entity.id} нет в таблице channels. Добавляем его в таблицу.')
-            await add_to_channels(dialog.entity, account_id, connection, metadata)
-            await avatar_download(dialog.entity, client, connection, metadata)  # скачивание и внесение в БД аватара
+            # Провекрка занесен ли канал, из которого мы скачиваем сообщения, в БД в таблицу channels:
+            channel_id = connection.execute(select([channels.c.id]).where(channels.c.channel == dialog.entity.id)).fetchone()
+            if not channel_id:  # Если канала в БД нет, то добавляем его в таблицу channels
+                print(f'Канала с id={dialog.entity.id} нет в таблице channels. Добавляем его в таблицу.')
+                await add_to_channels(dialog.entity, account_id, connection, metadata)
+                await avatar_download(dialog.entity, client, connection, metadata)  # скачивание и внесение в БД аватара
 
-        # last_check_date - время последнего обновления сообщений диалога (берётся из канала channels):
-        query = select([channels.c.lst_msgs_upd]).where(and_(
-            channels.c.channel == dialog.entity.id,
-            channels.c.account_id == account_id)
-        )
-        answer_from_db = connection.execute(query).fetchone()[0]
-        last_check_date = answer_from_db if answer_from_db else datetime(1982, 11, 5)
-        print(dialog.name)
-        # Заносим новое время обновления сообщений диалога в таблицу channels
-        connection.execute(update(channels).where(and_(
-            channels.c.channel == dialog.entity.id,
-            channels.c.account_id == account_id)
-        ).values(lst_msgs_upd=datetime.now()))
-        async for message in client.iter_messages(dialog):
-            msg_date = message.date.replace(tzinfo=timezone.utc).astimezone(tz=None)
-            if msg_date.timestamp() > last_check_date.timestamp():  # Если дата сообщения > даты последней проверки сообщений, то скачиваем его
-                # Создание комманды в БД на добавление сообщения в таблицу messages:
-                try:
-                    from_id = message.from_id.user_id if message.from_id else dialog.entity.id
-                    query = insert(table_messages).values(
-                        bot_id=dialog.entity.id if isinstance(dialog.entity, User) and dialog.entity.bot else None,
-                        account_id=account_id,
-                        message_id=str(message.id),
-                        channel_id_our=connection.execute(select([channels]).where(channels.c.channel == dialog.entity.id)).fetchone()[0],
-                        channel_id=dialog.entity.id,
-                        channel_name=connection.execute(select([channels]).where(channels.c.channel == dialog.entity.id)).fetchone()[4],
-                        msg_date=msg_date,
-                        napr=1 if message.out else 2,
-                        from_id=from_id,
-                        from_name=get_display_name(await client.get_entity(message.from_id.user_id if message.from_id else dialog.entity.id)),
-                        message=message.message,
-                        src=json.dumps(message.to_dict(), default=str, ensure_ascii=False),
-                        created_at=datetime.now()
-                    )
-                    connection.execute(query)  # Отправление команды в БД
-                except AttributeError:
-                    print(AttributeError)
-                    print('Чтото не так с from_id из сообщения:')
-                    print(message)
-                # Если в сообщении есть файл, то скачативаем его
-                if message.media:
-                    await file_download(message, dialog, client, account_id, connection, metadata)
+            # last_check_date - время последнего обновления сообщений диалога (берётся из канала channels):
+            query = select([channels.c.lst_msgs_upd]).where(and_(
+                channels.c.channel == dialog.entity.id,
+                channels.c.account_id == account_id)
+            )
+            answer_from_db = connection.execute(query).fetchone()[0]
+            last_check_date = answer_from_db if answer_from_db else datetime(1982, 11, 5)
+            print(dialog.name)
+            # Заносим новое время обновления сообщений диалога в таблицу channels
+            connection.execute(update(channels).where(and_(
+                channels.c.channel == dialog.entity.id,
+                channels.c.account_id == account_id)
+            ).values(lst_msgs_upd=datetime.now()))
+            async for message in client.iter_messages(dialog):
+                msg_date = message.date.replace(tzinfo=timezone.utc).astimezone(tz=None)
+                if msg_date.timestamp() > last_check_date.timestamp():  # Если дата сообщения > даты последней проверки сообщений, то скачиваем его
+                    # Создание комманды в БД на добавление сообщения в таблицу messages:
+                    try:
+                        from_id = message.from_id.user_id if message.from_id else dialog.entity.id
+                        query = insert(table_messages).values(
+                            bot_id=dialog.entity.id if isinstance(dialog.entity, User) and dialog.entity.bot else None,
+                            account_id=account_id,
+                            message_id=str(message.id),
+                            channel_id_our=connection.execute(select([channels]).where(channels.c.channel == dialog.entity.id)).fetchone()[0],
+                            channel_id=dialog.entity.id,
+                            channel_name=connection.execute(select([channels]).where(channels.c.channel == dialog.entity.id)).fetchone()[4],
+                            msg_date=msg_date,
+                            napr=1 if message.out else 2,
+                            from_id=from_id,
+                            from_name=get_display_name(await client.get_entity(message.from_id.user_id if message.from_id else dialog.entity.id)),
+                            message=message.message,
+                            src=json.dumps(message.to_dict(), default=str, ensure_ascii=False),
+                            created_at=datetime.now()
+                        )
+                        connection.execute(query)  # Отправление команды в БД
+                    except AttributeError:
+                        print(AttributeError)
+                        print('Чтото не так с from_id из сообщения:')
+                        print(message)
+                    # Если в сообщении есть файл, то скачативаем его
+                    if message.media:
+                        await file_download(message, dialog, client, account_id, connection, metadata)
 
-                entity = await client.get_entity(from_id)
-                await avatar_download(entity, client, connection, metadata)  # скачивание и внесение в БД аватара
-            else:
-                break
-    end_time = datetime.now()
-    print(f'Время проверки и скачивания сообщений для пользователя с id {account_id} составило {end_time - start_time}')
-    # Добавление в таблицу accounts даты последней проверки новых сообщений:
-    connection.execute(update(accounts).where(accounts.c.id == account_id).values(new_messages_last_check=end_time))
+                    entity = await client.get_entity(from_id)
+                    await avatar_download(entity, client, connection, metadata)  # скачивание и внесение в БД аватара
+                else:
+                    break
+        end_time = datetime.now()
+        print(f'Время проверки и скачивания сообщений для пользователя с id {account_id} составило {end_time - start_time}')
+        # Добавление в таблицу accounts даты последней проверки новых сообщений:
+        connection.execute(update(accounts).where(accounts.c.id == account_id).values(new_messages_last_check=end_time))
+        if command_id:
+            # Перевод команды в status=1 (выполнена):
+            connection.execute(update(commands).where(commands.c.id == command_id).values(status=1))
+    except:
+        print(f'При выполнении команды get_dialogs либо поиске новых сообщений для аккаунта с id={account_id} возникли проблемы')
+        if command_id:
+            # Перевод команды в status=2 (возникла проблема):
+            connection.execute(update(commands).where(commands.c.id == command_id).values(status=2))
     await client.disconnect()
 
 
 # Скачивание БОЛЬШИХ файлов
-async def get_big_files(account_id, connection, metadata):
+async def get_big_files(account_id, connection, metadata, command_id):
+    commands = Table('commands', metadata)
     client = await connect_to_telegram(account_id)
-    await client.connect()
-    table_messages = Table('messages', metadata)
-    message_files = Table('message_files', metadata)
+    try:
+        await client.connect()
+        table_messages = Table('messages', metadata)
+        message_files = Table('message_files', metadata)
 
-    # Выбираем из БД список сообщений у которых есть не скаченный файл:
-    not_downloaded_files = connection.execute(select(
-        message_files.c.channel_id,
-        message_files.c.message_id,
-        message_files.c.file_name
-    ).where(and_(
-        message_files.c.is_downloaded == 0,
-        message_files.c.account_id == account_id))).fetchall()
-    print(not_downloaded_files)
+        # Выбираем из БД список сообщений у которых есть не скаченный файл:
+        not_downloaded_files = connection.execute(select(
+            message_files.c.channel_id,
+            message_files.c.message_id,
+            message_files.c.file_name
+        ).where(and_(
+            message_files.c.is_downloaded == 0,
+            message_files.c.account_id == account_id))).fetchall()
+        print(not_downloaded_files)
 
-    for entry in not_downloaded_files:
+        for entry in not_downloaded_files:
 
-        # Скаивание файла на сервер
-        dialog_id, message_id, file_name = entry[0], entry[1], entry[2]
-        message = await client.get_messages(dialog_id, ids=message_id)
-        path = f'storage/{dialog_id}/{message_id}'
-        print(f'Началась загрузка файла {file_name}')
-        file_path = await client.download_media(message.media, path)
-        file_path = file_path.replace('\\', '/')
-        downloaded_at = datetime.now()
+            # Скаивание файла на сервер
+            dialog_id, message_id, file_name = entry[0], entry[1], entry[2]
+            message = await client.get_messages(dialog_id, ids=message_id)
+            path = f'storage/{dialog_id}/{message_id}'
+            print(f'Началась загрузка файла {file_name}')
+            file_path = await client.download_media(message.media, path)
+            file_path = file_path.replace('\\', '/')
+            downloaded_at = datetime.now()
 
-        # Изменение информации о файле в таблице message_files
-        file_extension = None
-        if file_path:
-            file_extension = os.path.splitext(file_path)[1].replace('.', '')
-        if file_name and not file_extension:
-            file_extension = os.path.splitext(file_name)[1].replace('.', '').lower()
+            # Изменение информации о файле в таблице message_files
+            file_extension = None
+            if file_path:
+                file_extension = os.path.splitext(file_path)[1].replace('.', '')
+            if file_name and not file_extension:
+                file_extension = os.path.splitext(file_name)[1].replace('.', '').lower()
 
-        connection.execute(update(message_files).where(and_(
-            message_files.c.message_id == message_id,
-            message_files.c.channel_id == dialog_id,
-            message_files.c.account_id == account_id)
-        ).values(
-            fn_our=file_path,
-            is_downloaded=1,
-            fn_ext=file_extension,
-            downloaded_at=downloaded_at))
+            connection.execute(update(message_files).where(and_(
+                message_files.c.message_id == message_id,
+                message_files.c.channel_id == dialog_id,
+                message_files.c.account_id == account_id)
+            ).values(
+                fn_our=file_path,
+                is_downloaded=1,
+                fn_ext=file_extension,
+                downloaded_at=downloaded_at))
 
-        # Изменение информации о файле в таблице messages
-        size = os.path.getsize(file_path)
-        files = {'filename': file_path, "size": size, "type": file_extension}
-        files = json.dumps(files)
+            # Изменение информации о файле в таблице messages
+            size = os.path.getsize(file_path)
+            files = {'filename': file_path, "size": size, "type": file_extension}
+            files = json.dumps(files)
 
-        connection.execute(update(table_messages).where(and_(
-            table_messages.c.message_id == message_id,
-            table_messages.c.channel_id == dialog_id,
-            table_messages.c.account_id == account_id)
-        ).values(
-            files=files))
+            connection.execute(update(table_messages).where(and_(
+                table_messages.c.message_id == message_id,
+                table_messages.c.channel_id == dialog_id,
+                table_messages.c.account_id == account_id)
+            ).values(
+                files=files))
 
-        print("Файл скачен. Информация занесена в базу данных.")
+            print("Файл скачен. Информация занесена в базу данных.")
+        # Перевод команды в status=1 (выполнена):
+        connection.execute(update(commands).where(commands.c.id == command_id).values(status=1))
+    except:
+        print(f'При выполнении команды get_big_files для аккаунта с id={account_id} возникли проблемы')
+        # Перевод команды в status=2 (возникла проблема):
+        connection.execute(update(commands).where(commands.c.id == command_id).values(status=2))
     await client.disconnect()
 
 
-# Подготовка сообщения к отправке (добавление его в таблицу messages_send)
-def send_message(account_id, arguments, connection, metadata):
+# Отправка сообщений:
+async def send_message(account_id, arguments, connection, metadata, command_id):
     commands = Table('commands', metadata)
     messages_send = Table('messages_send', metadata)
-
-    arguments = json.loads(arguments)
-    print(arguments)
-    query = insert(messages_send).values(
-        channel_id=str(arguments['to_channel']),
-        date_msg=datetime.now(),
-        from_account_id=account_id,
-        message=arguments['message_text'],
-        files=json.dumps(arguments['files']) if arguments['files'] else None
-    )
-    connection.execute(query)
-
-
-# Отправка сообщений из таблицы messages_send)
-async def finish_send(account_id, connection, metadata):
     client = await connect_to_telegram(account_id)
-    await client.connect()
-    messages_send = Table('messages_send', metadata)
+    try:
+        arguments = json.loads(arguments)
+        print(arguments)
+        query = insert(messages_send).values(
+            channel_id=str(arguments['to_channel']),
+            date_msg=datetime.now(),
+            from_account_id=account_id,
+            message=arguments['message_text'],
+            files=json.dumps(arguments['files']) if arguments['files'] else None
+        )
+        connection.execute(query)
 
-    message_arguments= connection.execute(select(
-        messages_send.c.id,
-        messages_send.c.channel_id,
-        messages_send.c.message,
-        messages_send.c.files
-    ).where(messages_send.c.from_account_id == account_id)).fetchall()
+        await client.connect()
 
-    for ma in message_arguments:
-        message_id = ma[0]
-        to_channel = ma[1]
-        text = ma[2]
-        files = json.loads(ma[3]) if ma[3] else None
+        message_arguments= connection.execute(select(
+            messages_send.c.id,
+            messages_send.c.channel_id,
+            messages_send.c.message,
+            messages_send.c.files
+        ).where(and_(
+            messages_send.c.from_account_id == account_id,
+            messages_send.c.sent_to_telegram == 0)
+        )).fetchall()
 
-        if files:
-            media, documents = [], []
-            # Разбиваем файлы на 2 типа (медиа и остальные):
-            # Будем пробовать отправить одним пакетом сообщение + медиафайлы и вторым пакетом остальные файлы
-            for file in files:
-                file_extension = os.path.splitext(file)[1].replace('.', '').lower()
-                if file_extension in ('jpg', 'jpeg', 'png', 'mp4', 'mov'):
-                    media.append(file)
-                else:
-                    documents.append(file)
-            if media:
-                try:
-                    await client.send_message(to_channel, text, file=media)
-                except MediaInvalidError:  # Когда файлы не удается отправить одним пакетом, отправляем по одному
-                    await client.send_message(to_channel, text)
-                    for file in media:
-                        await client.send_file(to_channel, file)
-                if documents:
+        for ma in message_arguments:
+            message_id = ma[0]
+            to_channel = ma[1]
+            text = ma[2]
+            files = json.loads(ma[3]) if ma[3] else None
+            ids = []  # Список id-шников, которые Телеграм присвоит сообщению и прикрепленным к нему файлам
+
+            if files:
+                media, documents = [], []
+                # Разбиваем файлы на 2 типа (медиа и остальные):
+                # Будем пробовать отправить одним пакетом сообщение + медиафайлы и вторым пакетом остальные файлы
+                for file in files:
+                    file_extension = os.path.splitext(file)[1].replace('.', '').lower()
+                    if file_extension in ('jpg', 'jpeg', 'png', 'mp4', 'mov'):
+                        media.append(file)
+                    else:
+                        documents.append(file)
+                if media:
                     try:
-                        await client.send_file(to_channel, file=documents)
+                        # tg_answer нужен для получения id-шников отправляемых сообщения и файлов
+                        tg_answer = await client.send_message(to_channel, text, file=media)
+                        if tg_answer is list:
+                            for ta in tg_answer:
+                                ids.append(ta.id)
+                        else:
+                            ids.append(tg_answer.id)
                     except MediaInvalidError:  # Когда файлы не удается отправить одним пакетом, отправляем по одному
+                        tg_answer = await client.send_message(to_channel, text)
+                        ids.append(tg_answer.id)
+                        for file in media:
+                            tg_answer = await client.send_file(to_channel, file)
+                            ids.append(tg_answer.id)
+                    if documents:
+                        try:
+                            tg_answer = await client.send_file(to_channel, file=documents)
+                            ids.append(tg_answer.id)
+                        except MediaInvalidError:  # Когда файлы не удается отправить одним пакетом, отправляем по одному
+                            for file in documents:
+                                tg_answer = await client.send_file(to_channel, file)
+                                ids.append(tg_answer.id)
+                else:
+                    try:
+                        tg_answer = await client.send_message(to_channel, text, file=documents)
+                        if tg_answer is list:
+                            for ta in tg_answer:
+                                ids.append(ta.id)
+                        else:
+                            ids.append(tg_answer.id)
+                    except MediaInvalidError:  # Когда файлы не удается отправить одним пакетом, отправляем по одному
+                        tg_answer = await client.send_message(to_channel, text)
+                        ids.append(tg_answer.id)
                         for file in documents:
-                            await client.send_file(to_channel, file)
+                            tg_answer = await client.send_file(to_channel, file)
+                            ids.append(tg_answer.id)
             else:
-                try:
-                    await client.send_message(to_channel, text, file=documents)
-                except MediaInvalidError:  # Когда файлы не удается отправить одним пакетом, отправляем по одному
-                    await client.send_message(to_channel, text)
-                    for file in documents:
-                        await client.send_file(to_channel, file)
-        else:
-            await client.send_message(to_channel, text)
-        # Удаление отправленного сообщения из таблицы messages_send:
-        connection.execute(delete(messages_send).where(messages_send.c.id == message_id))
-        print(f'Сообщение из таблицы messages_send с id={message_id} отправлено')
+                await client.send_message(to_channel, text)
+            # Изменение поля sent_to_telegram отправленного сообщения из таблицы messages_send на значение = 1:
+            connection.execute(update(messages_send).where(messages_send.c.id == message_id).values(sent_to_telegram=1))
+            print(f'Сообщение из таблицы messages_send с id={message_id} отправлено')
+            print(ids)
+        # Перевод команды в status=1 (выполнена):
+        connection.execute(update(commands).where(commands.c.id == command_id).values(status=1))
+    except:
+        print(f'При выполнении команды send_message для аккаунта с id={account_id} возникли проблемы')
+        # Перевод команды в status=2 (возникла проблема):
+        connection.execute(update(commands).where(commands.c.id == command_id).values(status=2))
     await client.disconnect()
 
 
@@ -470,8 +541,8 @@ async def main():
     # --------------------------------------------------
     print('Подключение к БД')
     host = os.environ.get('HOST')
-    # user = 'root'
-    user = os.environ.get('USERNAME')
+    user = 'root'
+    # user = os.environ.get('USERNAME')
     password = os.environ.get('PASSWORD')
     database = os.environ.get('DATABASE')
     engine = create_engine(f"mysql+pymysql://{user}:{password}@{host}/{database}", isolation_level="AUTOCOMMIT")
@@ -501,69 +572,19 @@ async def main():
                 connection.execute(update(commands).where(commands.c.id == command_id).values(status=3))
                 # -------------
                 if command_name == 'login':
-                    try:
-                        await login(account_id, connection, metadata)
-                        # Перевод команды в status=1 (выполнена):
-                        connection.execute(update(commands).where(commands.c.id == command_id).values(status=1))
-                    except:
-                        print(f'При выполнении команды {command_name} для аккаунта с id={account_id} возникли проблемы')
-                        # Перевод команды в status=2 (возникла проблема):
-                        connection.execute(update(commands).where(commands.c.id == command_id).values(status=2))
+                    await login(account_id, connection, metadata, command_id)
                 elif command_name == 'get_avatars':
-                    try:
-                        await get_avatars(account_id, connection, metadata)
-                        # Перевод команды в status=1 (выполнена):
-                        connection.execute(update(commands).where(commands.c.id == command_id).values(status=1))
-                    except:
-                        print(f'При выполнении команды {command_name} для аккаунта с id={account_id} возникли проблемы')
-                        # Перевод команды в status=2 (возникла проблема):
-                        connection.execute(update(commands).where(commands.c.id == command_id).values(status=2))
+                    await get_avatars(account_id, connection, metadata, command_id)
                 elif command_name == 'get_all':
-                    try:
-                        await get_all(account_id, connection, metadata)
-                        # Перевод команды в status=1 (выполнена):
-                        connection.execute(update(commands).where(commands.c.id == command_id).values(status=1))
-                    except:
-                        print(f'При выполнении команды {command_name} для аккаунта с id={account_id} возникли проблемы')
-                        # Перевод команды в status=2 (возникла проблема):
-                        connection.execute(update(commands).where(commands.c.id == command_id).values(status=2))
+                    await get_all(account_id, connection, metadata, command_id)
                 elif command_name == 'get_contacts':
-                    try:
-                        await get_contacts(account_id, connection, metadata)
-                        # Перевод команды в status=1 (выполнена):
-                        connection.execute(update(commands).where(commands.c.id == command_id).values(status=1))
-                    except:
-                        print(f'При выполнении команды {command_name} для аккаунта с id={account_id} возникли проблемы')
-                        # Перевод команды в status=2 (возникла проблема):
-                        connection.execute(update(commands).where(commands.c.id == command_id).values(status=2))
+                    await get_contacts(account_id, connection, metadata, command_id)
                 elif command_name == 'get_dialogs':
-                    try:
-                        await get_dialogs(account_id, connection, metadata)
-                        # Перевод команды в status=1 (выполнена):
-                        connection.execute(update(commands).where(commands.c.id == command_id).values(status=1))
-                    except:
-                        print(f'При выполнении команды {command_name} для аккаунта с id={account_id} возникли проблемы')
-                        # Перевод команды в status=2 (возникла проблема):
-                        connection.execute(update(commands).where(commands.c.id == command_id).values(status=2))
+                    await get_dialogs(account_id, connection, metadata, command_id)
                 elif command_name == 'get_big_files':
-                    try:
-                        await get_big_files(account_id, connection, metadata)
-                        # Перевод команды в status=1 (выполнена):
-                        connection.execute(update(commands).where(commands.c.id == command_id).values(status=1))
-                    except:
-                        print(f'При выполнении команды {command_name} для аккаунта с id={account_id} возникли проблемы')
-                        # Перевод команды в status=2 (возникла проблема):
-                        connection.execute(update(commands).where(commands.c.id == command_id).values(status=2))
+                    await get_big_files(account_id, connection, metadata, command_id)
                 elif command_name == 'send_message':
-                    try:
-                        send_message(account_id, command_args, connection, metadata)
-                        await finish_send(account_id, connection, metadata)
-                        # Перевод команды в status=1 (выполнена):
-                        connection.execute(update(commands).where(commands.c.id == command_id).values(status=1))
-                    except:
-                        print(f'При выполнении команды {command_name} для аккаунта с id={account_id} возникли проблемы')
-                        # Перевод команды в status=2 (возникла проблема):
-                        connection.execute(update(commands).where(commands.c.id == command_id).values(status=2))
+                        await send_message(account_id, command_args, connection, metadata, command_id)
                 # -------------
         print('Цикл поиска команд завершен')
         # --------------------------------------------------
@@ -577,10 +598,7 @@ async def main():
             for account in active_accounts:
                 print(f'Аккаунт с id={account[0]} и name = {account[1]} активен. Начинается проверка новых сообщений.')
                 account_id = account[0]
-                try:
-                    await get_dialogs(account_id, connection, metadata)
-                except:
-                    print(f'При поиске новых сообщений для аккаунта с id={account_id} возникли проблемы')
+                await get_dialogs(account_id, connection, metadata)
         print('Цикл поиска новых сообщений для активных аккаунтов завершен')
         # --------------------------------------------------
 
