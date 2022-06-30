@@ -50,8 +50,9 @@ async def login(account_id, connection, metadata, command_id):
             connection.execute(update(commands).where(commands.c.id == command_id).values(status=1))
         else:
             print('Login to Telegram failed')
-    except:
+    except Exception as e:
         print(f'При выполнении команды login для аккаунта с id={account_id} возникли проблемы')
+        print(e)
         # Перевод команды в status=2 (возникла проблема):
         connection.execute(update(commands).where(commands.c.id == command_id).values(status=2))
     await client.disconnect()
@@ -211,8 +212,9 @@ async def get_avatars(account_id, connection, metadata, command_id):
             await avatar_download(entity, client, connection, metadata)
         # Перевод команды в status=1 (команда выполнена):
         connection.execute(update(commands).where(commands.c.id == command_id).values(status=1))
-    except:
+    except Exception as e:
         print(f'При выполнении команды get_avatars для аккаунта с id={account_id} возникли проблемы')
+        print(e)
         # Перевод команды в status=2 (возникла проблема):
         connection.execute(update(commands).where(commands.c.id == command_id).values(status=2))
     await client.disconnect()
@@ -230,8 +232,9 @@ async def get_all(account_id, connection, metadata, command_id):
             await avatar_download(entity, client, connection, metadata)  # Скачивание (обновление) аватара
         # Перевод команды в status=1 (команда выполнена):
         connection.execute(update(commands).where(commands.c.id == command_id).values(status=1))
-    except:
+    except Exception as e:
         print(f'При выполнении команды get_all для аккаунта с id={account_id} возникли проблемы')
+        print(e)
         # Перевод команды в status=2 (возникла проблема):
         connection.execute(update(commands).where(commands.c.id == command_id).values(status=2))
     await client.disconnect()
@@ -278,8 +281,9 @@ async def get_contacts(account_id, connection, metadata, command_id):
             await avatar_download(contact, client, connection, metadata)  # Скачивание (обновление) аватара:
         # Перевод команды в status=1 (выполнена):
         connection.execute(update(commands).where(commands.c.id == command_id).values(status=1))
-    except:
+    except Exception as e:
         print(f'При выполнении команды get_contacts для аккаунта с id={account_id} возникли проблемы')
+        print(e)
         # Перевод команды в status=2 (возникла проблема):
         connection.execute(update(commands).where(commands.c.id == command_id).values(status=2))
     await client.disconnect()
@@ -359,8 +363,9 @@ async def get_dialogs(account_id, connection, metadata, command_id=None):
         if command_id:
             # Перевод команды в status=1 (выполнена):
             connection.execute(update(commands).where(commands.c.id == command_id).values(status=1))
-    except:
+    except Exception as e:
         print(f'При выполнении команды get_dialogs либо поиске новых сообщений для аккаунта с id={account_id} возникли проблемы')
+        print(e)
         if command_id:
             # Перевод команды в status=2 (возникла проблема):
             connection.execute(update(commands).where(commands.c.id == command_id).values(status=2))
@@ -429,15 +434,17 @@ async def get_big_files(account_id, connection, metadata, command_id):
             print("Файл скачен. Информация занесена в базу данных.")
         # Перевод команды в status=1 (выполнена):
         connection.execute(update(commands).where(commands.c.id == command_id).values(status=1))
-    except:
+    except Exception as e:
         print(f'При выполнении команды get_big_files для аккаунта с id={account_id} возникли проблемы')
+        print(e)
         # Перевод команды в status=2 (возникла проблема):
         connection.execute(update(commands).where(commands.c.id == command_id).values(status=2))
     await client.disconnect()
 
 
 # Отправка сообщений:
-async def send_message(account_id, arguments, connection, metadata, command_id):
+async def send_message(account_id, arguments, connection, metadata, command_id, command_date):
+    # Разбиваем сообщения на текст и файлы и вносим по одному в таблицу messages_send:
     commands = Table('commands', metadata)
     messages_send = Table('messages_send', metadata)
     client = await connect_to_telegram(account_id)
@@ -455,7 +462,7 @@ async def send_message(account_id, arguments, connection, metadata, command_id):
 
         await client.connect()
 
-        message_arguments= connection.execute(select(
+        message_arguments = connection.execute(select(
             messages_send.c.id,
             messages_send.c.channel_id,
             messages_send.c.message,
@@ -486,10 +493,12 @@ async def send_message(account_id, arguments, connection, metadata, command_id):
                     try:
                         # tg_answer нужен для получения id-шников отправляемых сообщения и файлов
                         tg_answer = await client.send_message(to_channel, text, file=media)
-                        if tg_answer is list:
+                        if type(tg_answer) is list:
                             for ta in tg_answer:
                                 ids.append(ta.id)
                         else:
+                            print(tg_answer)
+                            print(type(tg_answer))
                             ids.append(tg_answer.id)
                     except MediaInvalidError:  # Когда файлы не удается отправить одним пакетом, отправляем по одному
                         tg_answer = await client.send_message(to_channel, text)
@@ -500,7 +509,11 @@ async def send_message(account_id, arguments, connection, metadata, command_id):
                     if documents:
                         try:
                             tg_answer = await client.send_file(to_channel, file=documents)
-                            ids.append(tg_answer.id)
+                            if type(tg_answer) is list:
+                                for ta in tg_answer:
+                                    ids.append(ta.id)
+                            else:
+                                ids.append(tg_answer.id)
                         except MediaInvalidError:  # Когда файлы не удается отправить одним пакетом, отправляем по одному
                             for file in documents:
                                 tg_answer = await client.send_file(to_channel, file)
@@ -508,7 +521,7 @@ async def send_message(account_id, arguments, connection, metadata, command_id):
                 else:
                     try:
                         tg_answer = await client.send_message(to_channel, text, file=documents)
-                        if tg_answer is list:
+                        if type(tg_answer) is list:
                             for ta in tg_answer:
                                 ids.append(ta.id)
                         else:
@@ -520,15 +533,17 @@ async def send_message(account_id, arguments, connection, metadata, command_id):
                             tg_answer = await client.send_file(to_channel, file)
                             ids.append(tg_answer.id)
             else:
-                await client.send_message(to_channel, text)
+                tg_answer = await client.send_message(to_channel, text)
+                ids.append(tg_answer.id)
             # Изменение поля sent_to_telegram отправленного сообщения из таблицы messages_send на значение = 1:
             connection.execute(update(messages_send).where(messages_send.c.id == message_id).values(sent_to_telegram=1))
             print(f'Сообщение из таблицы messages_send с id={message_id} отправлено')
             print(ids)
         # Перевод команды в status=1 (выполнена):
         connection.execute(update(commands).where(commands.c.id == command_id).values(status=1))
-    except:
+    except Exception as e:
         print(f'При выполнении команды send_message для аккаунта с id={account_id} возникли проблемы')
+        print(e)
         # Перевод команды в status=2 (возникла проблема):
         connection.execute(update(commands).where(commands.c.id == command_id).values(status=2))
     await client.disconnect()
@@ -560,14 +575,16 @@ async def main():
         try:
             query = commands.select().where(commands.c.status == 0)  # Выбираем из БД команды со status=0 (новые)
             commands_list = connection.execute(query)  # Создаем список команд, скаченных из БД
-        except:
+        except Exception as e:
             print('Не удалось получить данные из таблицы commands базы данных. Попытка повторится в следующем цикле.')
+            print(e)
         if commands_list:  # Если список не пустой (в БД были команды), то отправляем команды на выполнение:
             for command in commands_list:
                 command_id = command[0]
                 command_name = command[1]
                 account_id = command[2]
                 command_args = command[3]
+                command_date = command[4]
                 # Перевод команды в status=3 (в процессе выполнения):
                 connection.execute(update(commands).where(commands.c.id == command_id).values(status=3))
                 # -------------
@@ -584,7 +601,7 @@ async def main():
                 elif command_name == 'get_big_files':
                     await get_big_files(account_id, connection, metadata, command_id)
                 elif command_name == 'send_message':
-                        await send_message(account_id, command_args, connection, metadata, command_id)
+                    await send_message(account_id, command_args, connection, metadata, command_id, command_date)
                 # -------------
         print('Цикл поиска команд завершен')
         # --------------------------------------------------
