@@ -5,7 +5,7 @@ import asyncio
 import mimetypes
 from dotenv import load_dotenv
 from datetime import datetime, timezone
-from sqlalchemy import create_engine, MetaData, Table, select, update, insert, delete, and_
+from sqlalchemy import create_engine, MetaData, Table, select, update, insert, delete, and_, or_
 from telethon import TelegramClient
 from telethon.tl.types import User, Dialog, Channel, Chat, UserStatusOffline, UserStatusRecently, \
     UserStatusLastMonth, UserStatusLastWeek, PeerChannel, PeerChat, PeerUser, Message, MessageMediaUnsupported, \
@@ -292,12 +292,14 @@ async def get_contacts(account_id, connection, metadata, command_id):
 # Скачивание сообщений из всех диалогов в БД в таблицу messages
 async def get_dialogs(account_id, connection, metadata, command_id=None):
     commands = Table('commands', metadata)
+    messages_send = Table('messages_send', metadata)
+    accounts = Table('accounts', metadata)
+    table_messages = Table('messages', metadata)
+    channels = Table('channels', metadata)
+
     client = await connect_to_telegram(account_id)
     try:
         await client.connect()
-        accounts = Table('accounts', metadata)
-        table_messages = Table('messages', metadata)
-        channels = Table('channels', metadata)
         start_time = datetime.now()
 
         async for dialog in client.iter_dialogs():
@@ -331,7 +333,7 @@ async def get_dialogs(account_id, connection, metadata, command_id=None):
                         query = insert(table_messages).values(
                             bot_id=dialog.entity.id if isinstance(dialog.entity, User) and dialog.entity.bot else None,
                             account_id=account_id,
-                            message_id=str(message.id),
+                            message_id=message.id,
                             channel_id_our=connection.execute(select([channels]).where(channels.c.channel == dialog.entity.id)).fetchone()[0],
                             channel_id=dialog.entity.id,
                             channel_name=connection.execute(select([channels]).where(channels.c.channel == dialog.entity.id)).fetchone()[4],
@@ -344,9 +346,16 @@ async def get_dialogs(account_id, connection, metadata, command_id=None):
                             created_at=datetime.now()
                         )
                         connection.execute(query)  # Отправление команды в БД
+
+                        #  Проверка, является ли сообщение отправленным из таблицы message_send:
+                        #  Если является, то удаляем его из таблицы message_send
+                        connection.execute(delete(messages_send).where(and_(
+                            messages_send.c.id_of_telegram == message.id,
+                            messages_send.c.channel_id == dialog.entity.id)))
+
                     except AttributeError:
                         print(AttributeError)
-                        print('Чтото не так с from_id из сообщения:')
+                        print('Что-то не так с from_id из сообщения:')
                         print(message)
                     # Если в сообщении есть файл, то скачативаем его
                     if message.media:
@@ -444,105 +453,218 @@ async def get_big_files(account_id, connection, metadata, command_id):
 
 # Отправка сообщений:
 async def send_message(account_id, arguments, connection, metadata, command_id, command_date):
-    # Разбиваем сообщения на текст и файлы и вносим по одному в таблицу messages_send:
+
+    # Разбиваем сообщение на текст и файлы и вносим по одному в таблицу messages_send:
     commands = Table('commands', metadata)
     messages_send = Table('messages_send', metadata)
     client = await connect_to_telegram(account_id)
     try:
         arguments = json.loads(arguments)
         print(arguments)
-        query = insert(messages_send).values(
-            channel_id=str(arguments['to_channel']),
-            date_msg=datetime.now(),
-            from_account_id=account_id,
-            message=arguments['message_text'],
-            files=json.dumps(arguments['files']) if arguments['files'] else None
-        )
-        connection.execute(query)
+        if arguments['message_text']:
+            connection.execute(insert(messages_send).values(
+                channel_id=str(arguments['to_channel']),
+                date_msg=datetime.now(),
+                from_account_id=account_id,
+                message=arguments['message_text'],
+                command_id=command_id,
+                created_at=command_date
+            ))
+        if arguments['files']:
+            files = arguments['files']
+            for file in files:
+                connection.execute(insert(messages_send).values(
+                    channel_id=str(arguments['to_channel']),
+                    date_msg=datetime.now(),
+                    from_account_id=account_id,
+                    file=file,
+                    command_id=command_id,
+                    created_at=command_date
+                ))
+
+        # Отправляем разбитое на текст и файлы сообщение и записываем телеграмные id-шники текста и файлов
+        message_parts = connection.execute(select(
+            messages_send.c.channel_id,
+            messages_send.c.message,
+            messages_send.c.file
+        ).where(
+            messages_send.c.command_id == command_id
+        ).order_by(messages_send.c.id)).fetchall()
 
         await client.connect()
 
-        message_arguments = connection.execute(select(
-            messages_send.c.id,
-            messages_send.c.channel_id,
-            messages_send.c.message,
-            messages_send.c.files
-        ).where(and_(
-            messages_send.c.from_account_id == account_id,
-            messages_send.c.sent_to_telegram == 0)
-        )).fetchall()
+        to_channel = message_parts[0][0]
+        text = message_parts[0][1]
 
-        for ma in message_arguments:
-            message_id = ma[0]
-            to_channel = ma[1]
-            text = ma[2]
-            files = json.loads(ma[3]) if ma[3] else None
-            ids = []  # Список id-шников, которые Телеграм присвоит сообщению и прикрепленным к нему файлам
-
-            if files:
-                media, documents = [], []
-                # Разбиваем файлы на 2 типа (медиа и остальные):
-                # Будем пробовать отправить одним пакетом сообщение + медиафайлы и вторым пакетом остальные файлы
-                for file in files:
-                    file_extension = os.path.splitext(file)[1].replace('.', '').lower()
-                    if file_extension in ('jpg', 'jpeg', 'png', 'mp4', 'mov'):
-                        media.append(file)
-                    else:
-                        documents.append(file)
-                if media:
-                    try:
-                        # tg_answer нужен для получения id-шников отправляемых сообщения и файлов
-                        tg_answer = await client.send_message(to_channel, text, file=media)
-                        if type(tg_answer) is list:
-                            for ta in tg_answer:
-                                ids.append(ta.id)
-                        else:
-                            print(tg_answer)
-                            print(type(tg_answer))
-                            ids.append(tg_answer.id)
-                    except MediaInvalidError:  # Когда файлы не удается отправить одним пакетом, отправляем по одному
-                        tg_answer = await client.send_message(to_channel, text)
-                        ids.append(tg_answer.id)
-                        for file in media:
-                            tg_answer = await client.send_file(to_channel, file)
-                            ids.append(tg_answer.id)
-                    if documents:
-                        try:
-                            tg_answer = await client.send_file(to_channel, file=documents)
-                            if type(tg_answer) is list:
-                                for ta in tg_answer:
-                                    ids.append(ta.id)
-                            else:
-                                ids.append(tg_answer.id)
-                        except MediaInvalidError:  # Когда файлы не удается отправить одним пакетом, отправляем по одному
-                            for file in documents:
-                                tg_answer = await client.send_file(to_channel, file)
-                                ids.append(tg_answer.id)
+        # Отправляемые файлы делим на 2 типа (медиа и остальные):
+        media, documents = [], []
+        for part in message_parts:
+            file = part[2]
+            if file:
+                file_extension = os.path.splitext(file)[1].replace('.', '').lower()
+                if file_extension in ('jpg', 'jpeg', 'png', 'mp4', 'mov'):
+                    media.append(file)
                 else:
-                    try:
-                        tg_answer = await client.send_message(to_channel, text, file=documents)
-                        if type(tg_answer) is list:
-                            for ta in tg_answer:
-                                ids.append(ta.id)
-                        else:
-                            ids.append(tg_answer.id)
-                    except MediaInvalidError:  # Когда файлы не удается отправить одним пакетом, отправляем по одному
-                        tg_answer = await client.send_message(to_channel, text)
+                    documents.append(file)
+
+        ids = []  # Список id-шников, которые Телеграм присвоит сообщению и прикрепленным к нему файлам
+        if media or documents:
+            if media:
+                try:
+                    # tg_answer нужен для получения id-шников отправляемых сообщения и файлов
+                    tg_answer = await client.send_message(to_channel, text, file=media)
+                    if type(tg_answer) is list:
+                        for ta in tg_answer:
+                            ids.append(ta.id)
+                    else:
                         ids.append(tg_answer.id)
+
+                    # Заносим id-шники присвоенные телеграмом в таблицу messages_send:
+                    if text:
+                        connection.execute(update(messages_send).where(
+                            and_(
+                                or_(
+                                    messages_send.c.message == text,
+                                    messages_send.c.file == media[0]
+                                ),
+                                messages_send.c.command_id == command_id
+                            )).values(id_of_telegram=ids[0]))
+                    else:
+                        connection.execute(update(messages_send).where(and_(
+                            messages_send.c.file == media[0],
+                            messages_send.c.command_id == command_id
+                        )).values(id_of_telegram=ids[0]))
+                    media.pop(0)
+                    ids.pop(0)
+                    for i in range(len(media)):
+                        connection.execute(update(messages_send).where(and_(
+                            messages_send.c.file == media[i],
+                            messages_send.c.command_id == command_id
+                        )).values(id_of_telegram=ids[i]))
+
+                except MediaInvalidError:  # Когда файлы не удается отправить одним пакетом, отправляем по одному
+                    tg_answer = await client.send_message(to_channel, text)
+                    ids.append(tg_answer.id)
+                    for file in media:
+                        tg_answer = await client.send_file(to_channel, file)
+                        ids.append(tg_answer.id)
+                        # Заносим id-шники присвоенные телеграмом в таблицу messages_send:
+                    if text:
+                        connection.execute(update(messages_send).where(and_(
+                            messages_send.c.message == text,
+                            messages_send.c.command_id == command_id
+                        )).values(id_of_telegram=ids[0]))
+                    else:
+                        connection.execute(update(messages_send).where(and_(
+                            messages_send.c.file == media[0],
+                            messages_send.c.command_id == command_id
+                        )).values(id_of_telegram=ids[0]))
+                    media.pop(0)
+                    ids.pop(0)
+                    for i in range(len(media)):
+                        connection.execute(update(messages_send).where(and_(
+                            messages_send.c.file == media[i],
+                            messages_send.c.command_id == command_id
+                        )).values(id_of_telegram=ids[i]))
+
+                if documents:
+                    try:
+                        tg_answer = await client.send_file(to_channel, file=documents)
+                        # Заносим id-шники присвоенные телеграмом в таблицу messages_send:
+                        if type(tg_answer) is list:
+                            for i in range(len(tg_answer)):
+                                connection.execute(update(messages_send).where(and_(
+                                    messages_send.c.file == documents[i],
+                                    messages_send.c.command_id == command_id
+                                )).values(id_of_telegram=tg_answer[i].id))
+                        else:
+                            connection.execute(update(messages_send).where(and_(
+                                messages_send.c.file == documents[0],
+                                messages_send.c.command_id == command_id
+                            )).values(id_of_telegram=tg_answer.id))
+                    except MediaInvalidError:  # Когда файлы не удается отправить одним пакетом, отправляем по одному
                         for file in documents:
                             tg_answer = await client.send_file(to_channel, file)
-                            ids.append(tg_answer.id)
+                            # Заносим id-шники присвоенные телеграмом в таблицу messages_send:
+                            connection.execute(update(messages_send).where(and_(
+                                messages_send.c.file == file,
+                                messages_send.c.command_id == command_id
+                            )).values(id_of_telegram=tg_answer.id))
             else:
-                tg_answer = await client.send_message(to_channel, text)
-                ids.append(tg_answer.id)
-            # Изменение поля sent_to_telegram отправленного сообщения из таблицы messages_send на значение = 1:
-            connection.execute(update(messages_send).where(messages_send.c.id == message_id).values(sent_to_telegram=1))
-            print(f'Сообщение из таблицы messages_send с id={message_id} отправлено')
-            print(ids)
+                try:
+                    # tg_answer нужен для получения id-шников отправляемых сообщения и файлов
+                    tg_answer = await client.send_message(to_channel, text, file=documents)
+                    if type(tg_answer) is list:
+                        for ta in tg_answer:
+                            ids.append(ta.id)
+                    else:
+                        ids.append(tg_answer.id)
+
+                    # Заносим id-шники присвоенные телеграмом в таблицу messages_send:
+                    if text:
+                        connection.execute(update(messages_send).where(
+                            and_(
+                                or_(
+                                    messages_send.c.message == text,
+                                    messages_send.c.file == documents[0]
+                                ),
+                                messages_send.c.command_id == command_id
+                            )).values(id_of_telegram=ids[0]))
+                    else:
+                        connection.execute(update(messages_send).where(and_(
+                            messages_send.c.file == documents[0],
+                            messages_send.c.command_id == command_id
+                        )).values(id_of_telegram=ids[0]))
+                    documents.pop(0)
+                    ids.pop(0)
+                    for i in range(len(documents)):
+                        connection.execute(update(messages_send).where(and_(
+                            messages_send.c.file == documents[i],
+                            messages_send.c.command_id == command_id
+                        )).values(id_of_telegram=ids[i]))
+
+                except MediaInvalidError:  # Когда файлы не удается отправить одним пакетом, отправляем по одному
+                    tg_answer = await client.send_message(to_channel, text)
+                    ids.append(tg_answer.id)
+                    for file in documents:
+                        tg_answer = await client.send_file(to_channel, file)
+                        ids.append(tg_answer.id)
+                        # Заносим id-шники присвоенные телеграмом в таблицу messages_send:
+                    if text:
+                        connection.execute(update(messages_send).where(and_(
+                            messages_send.c.message == text,
+                            messages_send.c.command_id == command_id
+                        )).values(id_of_telegram=ids[0]))
+                    else:
+                        connection.execute(update(messages_send).where(and_(
+                            messages_send.c.file == documents[0],
+                            messages_send.c.command_id == command_id
+                        )).values(id_of_telegram=ids[0]))
+                    documents.pop(0)
+                    ids.pop(0)
+                    for i in range(len(documents)):
+                        connection.execute(update(messages_send).where(and_(
+                            messages_send.c.file == documents[i],
+                            messages_send.c.command_id == command_id
+                        )).values(id_of_telegram=ids[i]))
+
+        else:
+            tg_answer = await client.send_message(to_channel, text)
+            # Заносим id-шники присвоенные телеграмом в таблицу messages_send:
+            connection.execute(update(messages_send).where(and_(
+                messages_send.c.message == text,
+                messages_send.c.command_id == command_id
+            )).values(id_of_telegram=tg_answer.id))
+
+        # Изменение поля sent_to_telegram отправленного сообщения и файлов из таблицы messages_send на значение = 1:
+        connection.execute(update(messages_send).where(messages_send.c.command_id == command_id).values(sent_to_telegram=1))
+        del ids
+        print(f'Сообщение cозданное командой с id={command_id} отправлено')
+
         # Перевод команды в status=1 (выполнена):
         connection.execute(update(commands).where(commands.c.id == command_id).values(status=1))
     except Exception as e:
-        print(f'При выполнении команды send_message для аккаунта с id={account_id} возникли проблемы')
+        print(f'При выполнении команды отправки сообщения с id={command_id} возникли проблемы')
         print(e)
         # Перевод команды в status=2 (возникла проблема):
         connection.execute(update(commands).where(commands.c.id == command_id).values(status=2))
