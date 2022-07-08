@@ -7,7 +7,7 @@ from sqlalchemy import create_engine, MetaData, Table, select, update, insert, d
 
 
 # Парсинг команд (аргументов), переданных из консоли
-commands = ['get_avatars', 'get_all', 'get_contacts', 'get_dialogs', 'send_message', 'login', 'get_big_files']
+commands = ['get_avatars', 'get_all', 'get_contacts', 'get_dialogs', 'send_message', 'login', 'code', 'get_big_files']
 parser = argparse.ArgumentParser(description='Command and arguments receiver')
 parser.add_argument('command', type=str, help=f'Available commands: {", ".join(commands)}', choices=commands)
 parser.add_argument('account_id', type=int, help='Account_id')
@@ -21,8 +21,8 @@ args = parser.parse_args()
 load_dotenv('user.env')  # load_dotenv загружает из файла user.env переменные среды
 print('Подключение к БД')
 host = os.environ.get('HOST')
-# user = 'root'
-user = os.environ.get('USERNAME')
+user = 'root'
+# user = os.environ.get('USERNAME')
 password = os.environ.get('PASSWORD')
 database = os.environ.get('DATABASE')
 engine = create_engine(f"mysql+pymysql://{user}:{password}@{host}/{database}", isolation_level="AUTOCOMMIT")
@@ -37,6 +37,8 @@ if args.command == 'send_message':
     message_text = ' '.join(args.message)
     files = list(args.files)
     arguments = json.dumps({'to_channel': args.chat_id, 'message_text': message_text, 'files': files})
+elif args.command == 'code':
+    arguments = json.dumps({'to_channel': args.chat_id})
 
 connection.execute(insert(commands).values(
     command=args.command,

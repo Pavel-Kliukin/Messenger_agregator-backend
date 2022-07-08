@@ -14,46 +14,73 @@ from telethon.utils import get_display_name
 from telethon.errors import SessionPasswordNeededError, MediaInvalidError
 
 
-# Авторизация пользователя в Телеграм
-async def login(account_id, connection, metadata, command_id):
+# Начало авторизации пользователя в Телеграм
+async def login_start(account_id, connection, metadata, command_id):
     accounts = Table('accounts', metadata)
     commands = Table('commands', metadata)
     client = await connect_to_telegram(account_id)
     try:
         connection.execute(update(accounts).where(accounts.c.id == account_id).values(status=3))  # перевод аккаунта в status=3 (идет процесс логина)
         await client.connect()
-        # Если не авторизованы в Telegram, то авторизируемся:
-        if not await client.is_user_authorized():
-            phone = '+' + connection.execute(select([accounts.c.phone]).where(accounts.c.id == account_id)).fetchone()[0]
-            await client.send_code_request(phone)
-            connection.execute(update(accounts).where(accounts.c.id == account_id).values(status=4))
-            try:
-                print('Ожидание кода из базы данных в течение 60 секунд...')
-                for i in range(10):  # Ждём 10 раз по 6 сек, чтобы получить код из БД
-                    time.sleep(6)
-                    code = connection.execute(select([accounts.c.code]).where(accounts.c.id == account_id)).fetchone()[0]
-                    if code:
-                        await client.sign_in(phone, code)  # Отправляем Телеграму код
-                        # и удаляем этот код в таблице accounts:
-                        connection.execute(update(accounts).where(accounts.c.id == account_id).values(code=None))
-                        break
-                    if i == 9:
-                        print('Ожидание кода завершено безрезультатно. Нужно запустить авторизацию повторно.')
-                        connection.execute(update(accounts).where(accounts.c.id == account_id).values(status=3))  # перевод аккаунта в status=3 (идет процесс логина)
-            except SessionPasswordNeededError:  # Если стоит двухфакторная верификация
-                await client.sign_in(password=input('У вас двухфакторная верификация. Введите свой пароль:'))
-        if await (client.is_user_authorized()):
-            print('Login to Telegram completed successfully')
-            # Перевод аккаунта в status=1 (аккаунт активен):
-            connection.execute(update(accounts).where(accounts.c.id == account_id).values(status=1))
-            # Перевод команды в status=1 (команда выполнена):
-            connection.execute(update(commands).where(commands.c.id == command_id).values(status=1))
-        else:
-            print('Login to Telegram failed')
+        phone = '+' + connection.execute(select([accounts.c.phone]).where(accounts.c.id == account_id)).fetchone()[0]
+        ph = await client.send_code_request(phone)
+        phone_code_hash = ph.phone_code_hash  # может понадобиться для второй части авторизации
+        # Записываем phone_code_hash в таблицу accounts:
+        connection.execute(update(accounts).where(accounts.c.id == account_id).values(phone_code_hash=phone_code_hash))
+
+        print('Ожидание кода из базы данных........ (остальные процессы продолжают своё выполнение)')
+        time.sleep(5)  # Задержка, чтобы успеть прочитать это сообщение в консоли
+        connection.execute(update(accounts).where(accounts.c.id == account_id).values(status=4))  # перевод аккаунта в status=4 (ждёт код авторизации)
+        # Перевод команды LOGIN в status=1 (команда выполнена):
+        connection.execute(update(commands).where(commands.c.id == command_id).values(status=1))
     except Exception as e:
-        print(f'При выполнении команды login для аккаунта с id={account_id} возникли проблемы')
+        print(f'При выполнении команды login (login_start) для аккаунта с id={account_id} возникли проблемы')
         print(e)
         # Перевод команды в status=2 (возникла проблема):
+        connection.execute(update(commands).where(commands.c.id == command_id).values(status=2))
+    await client.disconnect()
+
+
+# Завершение авторизации пользователя в Телеграм
+async def login_finish(account_id, argument, connection, metadata, command_id):
+    accounts = Table('accounts', metadata)
+    commands = Table('commands', metadata)
+    client = await connect_to_telegram(account_id)
+    try:
+        code = json.loads(argument)['to_channel']
+        phone = '+' + connection.execute(select([accounts.c.phone]).where(accounts.c.id == account_id)).fetchone()[0]
+        # Занесение кода в колонку code таблицы accounts:
+        connection.execute(update(accounts).where(accounts.c.id == account_id).values(code=code))
+
+        await client.connect()
+        try:
+            print('Оправка кода авторизации в Телеграм')
+            code = connection.execute(select([accounts.c.code]).where(accounts.c.id == account_id)).fetchone()[0]
+            await client.sign_in(phone, code)  # Отправляем Телеграму код
+        except SessionPasswordNeededError:  # Если стоит двухфакторная верификация
+            await client.sign_in(password=input('У вас двухфакторная верификация. Введите свой пароль:'))
+        except ValueError:
+            print('Авторизация с использованием phone_code_hash')
+            phone_code_hash = connection.execute(select([accounts.c.phone_code_hash]).where(accounts.c.id == account_id)).fetchone()[0]
+            await client.sign_in(phone, code, phone_code_hash=phone_code_hash)
+
+        if await client.is_user_authorized():
+            print(f'Авторизация в Телеграм пользователя с id={account_id} прошла успешно')
+            # Перевод аккаунта в status=1 (аккаунт активен):
+            connection.execute(update(accounts).where(accounts.c.id == account_id).values(status=1))
+            # Перевод команды CODE в status=1 (команда выполнена):
+            connection.execute(update(commands).where(commands.c.id == command_id).values(status=1))
+            # Удаление кода из колонки code таблицы accounts:
+            connection.execute(update(accounts).where(accounts.c.id == account_id).values(code=None))
+            # Удаление phone_code_hash из таблицы accounts:
+            connection.execute(update(accounts).where(accounts.c.id == account_id).values(phone_code_hash=None))
+        else:
+            print(f'НЕ УДАЛОСЬ авторизовать в Телеграм пользователя с id={account_id} ')
+            connection.execute(update(accounts).where(accounts.c.id == account_id).values(status=3))  # перевод аккаунта в status=3 (идет процесс логина)
+    except Exception as e:
+        print(f'При выполнении команды code для аккаунта с id={account_id} возникли проблемы')
+        print(e)
+        # Перевод команды CODE в status=2 (при выполнении возникла ошибка):
         connection.execute(update(commands).where(commands.c.id == command_id).values(status=2))
     await client.disconnect()
 
@@ -678,8 +705,8 @@ async def main():
     # --------------------------------------------------
     print('Подключение к БД')
     host = os.environ.get('HOST')
-    # user = 'root'
-    user = os.environ.get('USERNAME')
+    user = 'root'
+    # user = os.environ.get('USERNAME')
     password = os.environ.get('PASSWORD')
     database = os.environ.get('DATABASE')
     engine = create_engine(f"mysql+pymysql://{user}:{password}@{host}/{database}", isolation_level="AUTOCOMMIT")
@@ -711,7 +738,9 @@ async def main():
                 connection.execute(update(commands).where(commands.c.id == command_id).values(status=3))
                 # -------------
                 if command_name == 'login':
-                    await login(account_id, connection, metadata, command_id)
+                    await login_start(account_id, connection, metadata, command_id)
+                elif command_name == 'code':
+                    await login_finish(account_id, command_args, connection, metadata, command_id)
                 elif command_name == 'get_avatars':
                     await get_avatars(account_id, connection, metadata, command_id)
                 elif command_name == 'get_all':
