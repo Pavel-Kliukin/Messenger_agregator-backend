@@ -3,3 +3,4 @@
 storage/
 avatars/
 test/
+user.env
