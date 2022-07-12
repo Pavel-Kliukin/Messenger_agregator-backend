@@ -23,7 +23,7 @@ async def login_start(account_id, connection, metadata, command_id):
         connection.execute(update(accounts).where(accounts.c.id == account_id).values(status=3))  # перевод аккаунта в status=3 (идет процесс логина)
         await client.connect()
         phone = '+' + connection.execute(select([accounts.c.phone]).where(accounts.c.id == account_id)).fetchone()[0]
-        ph = await client.send_code_request(phone)
+        ph = await client.send_code_request(phone, force_sms=True)
         phone_code_hash = ph.phone_code_hash  # может понадобиться для второй части авторизации
         # Записываем phone_code_hash в таблицу accounts:
         connection.execute(update(accounts).where(accounts.c.id == account_id).values(phone_code_hash=phone_code_hash))
@@ -343,8 +343,8 @@ async def get_dialogs(account_id, connection, metadata, command_id=None):
                 channels.c.channel == dialog.entity.id,
                 channels.c.account_id == account_id)
             )
-            answer_from_db = connection.execute(query).fetchone()[0]
-            last_check_date = answer_from_db if answer_from_db else datetime(1982, 11, 5)
+            answer_from_db = connection.execute(query).fetchone()
+            last_check_date = answer_from_db[0] if answer_from_db else datetime(1982, 11, 5)
             print(dialog.name)
             # Заносим новое время обновления сообщений диалога в таблицу channels
             connection.execute(update(channels).where(and_(
@@ -354,7 +354,7 @@ async def get_dialogs(account_id, connection, metadata, command_id=None):
             async for message in client.iter_messages(dialog):
                 msg_date = message.date.replace(tzinfo=timezone.utc).astimezone(tz=None)
                 if msg_date.timestamp() > last_check_date.timestamp():  # Если дата сообщения > даты последней проверки сообщений, то скачиваем его
-                    # Создание комманды в БД на добавление сообщения в таблицу messages:
+                    # Создание команды в БД на добавление сообщения в таблицу messages:
                     try:
                         from_id = message.from_id.user_id if message.from_id else dialog.entity.id
                         query = insert(table_messages).values(
