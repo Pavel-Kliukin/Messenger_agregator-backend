@@ -11,7 +11,7 @@ commands = ['get_avatars', 'get_all', 'get_contacts', 'get_dialogs', 'send_messa
 parser = argparse.ArgumentParser(description='Command and arguments receiver')
 parser.add_argument('command', type=str, help=f'Available commands: {", ".join(commands)}', choices=commands)
 parser.add_argument('account_id', type=int, help='Account_id')
-parser.add_argument('chat_id', type=str, nargs='?', default='', help='Chat_id')
+parser.add_argument('channel_or_code', type=str, nargs='?', default='', help='Channel_id or code')
 parser.add_argument('-m', '--message', type=str, nargs='*', default='', help='Message text')
 parser.add_argument('-f', '--files', type=str, nargs='*', default='', help='Paths to files to attach')
 args = parser.parse_args()
@@ -37,8 +37,8 @@ if args.command == 'send_message':
     message_text = ' '.join(args.message)
     files = list(args.files)
     arguments = json.dumps({'to_channel/code': args.chat_id, 'message_text': message_text, 'files': files})
-elif args.command == 'code':
-    arguments = json.dumps({'to_channel/code': args.chat_id})
+elif args.command == 'login_code' or args.command == 'login_2f':
+    arguments = json.dumps({'to_channel/code': args.channel_or_code})
 
 connection.execute(insert(commands).values(
     command=args.command,

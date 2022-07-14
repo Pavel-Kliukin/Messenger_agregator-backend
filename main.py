@@ -763,7 +763,7 @@ async def main():
                 if command_name == 'login_start':
                     await login_start(account_id, connection, metadata, command_id)
                 elif command_name == 'login_code':
-                    await login_finish(account_id, command_args, connection, metadata, command_id)
+                    await login_finish(account_id, command_args, connection, metadata, command_id, two_factor_verification=True)
                 elif command_name == 'login_2f':
                     await login_finish(account_id, command_args, connection, metadata, command_id)
                 elif command_name == 'get_avatars':
