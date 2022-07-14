@@ -28,7 +28,7 @@ async def login_start(account_id, connection, metadata, command_id):
         # Записываем phone_code_hash в таблицу accounts:
         connection.execute(update(accounts).where(accounts.c.id == account_id).values(phone_code_hash=phone_code_hash))
 
-        print('Ожидание кода из базы данных........ (остальные процессы продолжают своё выполнение)')
+        print('Ожидание кода Телеграма, из базы данных........ (остальные процессы продолжают своё выполнение)')
         time.sleep(5)  # Задержка, чтобы успеть прочитать это сообщение в консоли
         connection.execute(update(accounts).where(accounts.c.id == account_id).values(status=4))  # перевод аккаунта в status=4 (ждёт код авторизации)
         # Перевод команды LOGIN в status=1 (команда выполнена):
@@ -42,15 +42,19 @@ async def login_start(account_id, connection, metadata, command_id):
 
 
 # Завершение авторизации пользователя в Телеграм
-async def login_finish(account_id, argument, connection, metadata, command_id):
+async def login_finish(account_id, argument, connection, metadata, command_id, *two_factor_verification):
     accounts = Table('accounts', metadata)
     commands = Table('commands', metadata)
     client = await connect_to_telegram(account_id)
     try:
-        code = json.loads(argument)['to_channel']
+        code = json.loads(argument)['to_channel/code']
         phone = '+' + connection.execute(select([accounts.c.phone]).where(accounts.c.id == account_id)).fetchone()[0]
-        # Занесение кода в колонку code таблицы accounts:
-        connection.execute(update(accounts).where(accounts.c.id == account_id).values(code=code))
+        if two_factor_verification:
+            # Занесение кода в колонку 2f_code таблицы accounts:
+            connection.execute(update(accounts).where(accounts.c.id == account_id).values(code_2f=code))
+        else:
+            # Занесение кода в колонку code таблицы accounts:
+            connection.execute(update(accounts).where(accounts.c.id == account_id).values(code=code))
 
         await client.connect()
         try:
@@ -58,14 +62,30 @@ async def login_finish(account_id, argument, connection, metadata, command_id):
             code = connection.execute(select([accounts.c.code]).where(accounts.c.id == account_id)).fetchone()[0]
             await client.sign_in(phone, code)  # Отправляем Телеграму код
         except SessionPasswordNeededError:  # Если стоит двухфакторная верификация
-            await client.sign_in(password=input('У вас двухфакторная верификация. Введите свой пароль:'))
+            if two_factor_verification:
+                code_2f = connection.execute(select([accounts.c.code_2f]).where(accounts.c.id == account_id)).fetchone()[0]
+                await client.sign_in(password=code_2f)
+            else:
+                # Перевод аккаунта в status=5 (ждёт код авторизации):
+                connection.execute(update(accounts).where(accounts.c.id == account_id).values(status=5))
+                print('У вас двухфакторная авторизация. Нужен ваш код...')
+                time.sleep(5)  # Задержка, чтобы успеть прочитать это сообщение в консоли
+                return
         except ValueError:
             try:
                 print('Авторизация с использованием phone_code_hash')
                 phone_code_hash = connection.execute(select([accounts.c.phone_code_hash]).where(accounts.c.id == account_id)).fetchone()[0]
                 await client.sign_in(phone, code, phone_code_hash=phone_code_hash)
             except SessionPasswordNeededError:  # Если стоит двухфакторная верификация
-                await client.sign_in(password=input('У вас двухфакторная верификация. Введите свой пароль:'))
+                if two_factor_verification:
+                    code_2f = connection.execute(select([accounts.c.code_2f]).where(accounts.c.id == account_id)).fetchone()[0]
+                    await client.sign_in(password=code_2f)
+            else:
+                # Перевод аккаунта в status=5 (ждёт код авторизации):
+                connection.execute(update(accounts).where(accounts.c.id == account_id).values(status=5))
+                print('У вас двухфакторная авторизация. Нужен ваш код...')
+                time.sleep(5)  # Задержка, чтобы успеть прочитать это сообщение в консоли
+                return
 
         if await client.is_user_authorized():
             print(f'Авторизация в Телеграм пользователя с id={account_id} прошла успешно')
@@ -81,7 +101,7 @@ async def login_finish(account_id, argument, connection, metadata, command_id):
             print(f'НЕ УДАЛОСЬ авторизовать в Телеграм пользователя с id={account_id} ')
             connection.execute(update(accounts).where(accounts.c.id == account_id).values(status=3))  # перевод аккаунта в status=3 (идет процесс логина)
     except Exception as e:
-        print(f'При выполнении команды code для аккаунта с id={account_id} возникли проблемы')
+        print(f'При выполнении функции login_finish для аккаунта с id={account_id} возникли проблемы')
         print(e)
         # Перевод команды CODE в status=2 (при выполнении возникла ошибка):
         connection.execute(update(commands).where(commands.c.id == command_id).values(status=2))
@@ -493,7 +513,7 @@ async def send_message(account_id, arguments, connection, metadata, command_id, 
         print(arguments)
         if arguments['message_text']:
             connection.execute(insert(messages_send).values(
-                channel_id=str(arguments['to_channel']),
+                channel_id=str(arguments['to_channel/code']),
                 date_msg=datetime.now(),
                 from_account_id=account_id,
                 message=arguments['message_text'],
@@ -504,7 +524,7 @@ async def send_message(account_id, arguments, connection, metadata, command_id, 
             files = arguments['files']
             for file in files:
                 connection.execute(insert(messages_send).values(
-                    channel_id=str(arguments['to_channel']),
+                    channel_id=str(arguments['to_channel/code']),
                     date_msg=datetime.now(),
                     from_account_id=account_id,
                     file=file,
@@ -740,9 +760,11 @@ async def main():
                 # Перевод команды в status=3 (в процессе выполнения):
                 connection.execute(update(commands).where(commands.c.id == command_id).values(status=3))
                 # -------------
-                if command_name == 'login':
+                if command_name == 'login_start':
                     await login_start(account_id, connection, metadata, command_id)
-                elif command_name == 'code':
+                elif command_name == 'login_code':
+                    await login_finish(account_id, command_args, connection, metadata, command_id)
+                elif command_name == 'login_2f':
                     await login_finish(account_id, command_args, connection, metadata, command_id)
                 elif command_name == 'get_avatars':
                     await get_avatars(account_id, connection, metadata, command_id)
