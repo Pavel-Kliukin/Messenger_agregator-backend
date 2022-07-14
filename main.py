@@ -754,7 +754,7 @@ async def main():
                 elif command_name == 'send_message':
                     await send_message(account_id, command_args, connection, metadata, command_id, command_date)
                 # -------------
-        print('Цикл поиска команд завершен')
+        # print('Цикл поиска команд завершен')
         # --------------------------------------------------
 
         # Отслеживание новых сообщений для активных аккаунтов (status = 1 в таблице accounts из БД)
@@ -764,10 +764,10 @@ async def main():
         active_accounts = connection.execute(query)  # Создаем список активных аккаунтов, скаченных из БД
         if active_accounts:  # Если есть активные аккаунты, то для каждого проверяем наличие новых сообщений в Telegram:
             for account in active_accounts:
-                print(f'Аккаунт с id={account[0]} и name = {account[1]} активен. Начинается проверка новых сообщений.')
+                # print(f'Аккаунт с id={account[0]} и name = {account[1]} активен. Начинается проверка новых сообщений.')
                 account_id = account[0]
                 await get_dialogs(account_id, connection, metadata)
-        print('Цикл поиска новых сообщений для активных аккаунтов завершен')
+        # print('Цикл поиска новых сообщений для активных аккаунтов завершен')
         # --------------------------------------------------
 
 if __name__=='__main__':
