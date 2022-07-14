@@ -80,12 +80,12 @@ async def login_finish(account_id, argument, connection, metadata, command_id, t
                 if two_factor_verification:
                     code_2f = connection.execute(select([accounts.c.code_2f]).where(accounts.c.id == account_id)).fetchone()[0]
                     await client.sign_in(password=code_2f)
-            else:
-                # Перевод аккаунта в status=5 (ждёт код авторизации):
-                connection.execute(update(accounts).where(accounts.c.id == account_id).values(status=5))
-                print('У вас двухфакторная авторизация. Нужен ваш код...')
-                time.sleep(5)  # Задержка, чтобы успеть прочитать это сообщение в консоли
-                return
+                else:
+                    # Перевод аккаунта в status=5 (ждёт код авторизации):
+                    connection.execute(update(accounts).where(accounts.c.id == account_id).values(status=5))
+                    print('У вас двухфакторная авторизация. Нужен ваш код...')
+                    time.sleep(5)  # Задержка, чтобы успеть прочитать это сообщение в консоли
+                    return
 
         if await client.is_user_authorized():
             print(f'Авторизация в Телеграм пользователя с id={account_id} прошла успешно')
