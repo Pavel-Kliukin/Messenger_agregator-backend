@@ -60,9 +60,12 @@ async def login_finish(account_id, argument, connection, metadata, command_id):
         except SessionPasswordNeededError:  # Если стоит двухфакторная верификация
             await client.sign_in(password=input('У вас двухфакторная верификация. Введите свой пароль:'))
         except ValueError:
-            print('Авторизация с использованием phone_code_hash')
-            phone_code_hash = connection.execute(select([accounts.c.phone_code_hash]).where(accounts.c.id == account_id)).fetchone()[0]
-            await client.sign_in(phone, code, phone_code_hash=phone_code_hash)
+            try:
+                print('Авторизация с использованием phone_code_hash')
+                phone_code_hash = connection.execute(select([accounts.c.phone_code_hash]).where(accounts.c.id == account_id)).fetchone()[0]
+                await client.sign_in(phone, code, phone_code_hash=phone_code_hash)
+            except SessionPasswordNeededError:  # Если стоит двухфакторная верификация
+                await client.sign_in(password=input('У вас двухфакторная верификация. Введите свой пароль:'))
 
         if await client.is_user_authorized():
             print(f'Авторизация в Телеграм пользователя с id={account_id} прошла успешно')
