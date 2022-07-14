@@ -62,6 +62,8 @@ async def login_finish(account_id, argument, connection, metadata, command_id, t
             code = connection.execute(select([accounts.c.code]).where(accounts.c.id == account_id)).fetchone()[0]
             await client.sign_in(phone, code)  # Отправляем Телеграму код
         except SessionPasswordNeededError:  # Если стоит двухфакторная верификация
+            # Перевод команды login_code либо login_2f в status=1 (команда выполнена):
+            connection.execute(update(commands).where(commands.c.id == command_id).values(status=1))
             if two_factor_verification:
                 code_2f = connection.execute(select([accounts.c.code_2f]).where(accounts.c.id == account_id)).fetchone()[0]
                 await client.sign_in(password=code_2f)
@@ -77,6 +79,8 @@ async def login_finish(account_id, argument, connection, metadata, command_id, t
                 phone_code_hash = connection.execute(select([accounts.c.phone_code_hash]).where(accounts.c.id == account_id)).fetchone()[0]
                 await client.sign_in(phone, code, phone_code_hash=phone_code_hash)
             except SessionPasswordNeededError:  # Если стоит двухфакторная верификация
+                # Перевод команды login_code либо login_2f в status=1 (команда выполнена):
+                connection.execute(update(commands).where(commands.c.id == command_id).values(status=1))
                 if two_factor_verification:
                     code_2f = connection.execute(select([accounts.c.code_2f]).where(accounts.c.id == account_id)).fetchone()[0]
                     await client.sign_in(password=code_2f)
@@ -91,7 +95,7 @@ async def login_finish(account_id, argument, connection, metadata, command_id, t
             print(f'Авторизация в Телеграм пользователя с id={account_id} прошла успешно')
             # Перевод аккаунта в status=1 (аккаунт активен):
             connection.execute(update(accounts).where(accounts.c.id == account_id).values(status=1))
-            # Перевод команды CODE в status=1 (команда выполнена):
+            # Перевод команды login_code либо login_2f в status=1 (команда выполнена):
             connection.execute(update(commands).where(commands.c.id == command_id).values(status=1))
             # Удаление кода из колонки code таблицы accounts:
             connection.execute(update(accounts).where(accounts.c.id == account_id).values(code=None))
