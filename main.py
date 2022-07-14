@@ -42,7 +42,7 @@ async def login_start(account_id, connection, metadata, command_id):
 
 
 # Завершение авторизации пользователя в Телеграм
-async def login_finish(account_id, argument, connection, metadata, command_id, *two_factor_verification):
+async def login_finish(account_id, argument, connection, metadata, command_id, two_factor_verification=False):
     accounts = Table('accounts', metadata)
     commands = Table('commands', metadata)
     client = await connect_to_telegram(account_id)
@@ -763,9 +763,9 @@ async def main():
                 if command_name == 'login_start':
                     await login_start(account_id, connection, metadata, command_id)
                 elif command_name == 'login_code':
-                    await login_finish(account_id, command_args, connection, metadata, command_id, two_factor_verification=True)
-                elif command_name == 'login_2f':
                     await login_finish(account_id, command_args, connection, metadata, command_id)
+                elif command_name == 'login_2f':
+                    await login_finish(account_id, command_args, connection, metadata, command_id, two_factor_verification=True)
                 elif command_name == 'get_avatars':
                     await get_avatars(account_id, connection, metadata, command_id)
                 elif command_name == 'get_all':
