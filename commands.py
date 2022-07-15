@@ -21,7 +21,6 @@ args = parser.parse_args()
 load_dotenv('user.env')  # load_dotenv загружает из файла user.env переменные среды
 print('Подключение к БД')
 host = os.environ.get('HOST')
-# user = 'root'
 user = os.environ.get('USERNAME')
 password = os.environ.get('PASSWORD')
 database = os.environ.get('DATABASE')
