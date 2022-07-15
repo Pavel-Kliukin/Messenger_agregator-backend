@@ -222,7 +222,6 @@ async def file_download(message, dialog, client, account_id, connection, metadat
             table_messages.c.message_id == message.id,
             table_messages.c.channel_id == dialog.entity.id)
         ).values(files=files))
-        print("Информация о файле занесена")
 
 
 # Скачивание ОДНОЙ аватарки (с удалением старой, если она существовала)
@@ -374,7 +373,7 @@ async def get_dialogs(account_id, connection, metadata, command_id=None):
             # Провекрка занесен ли канал, из которого мы скачиваем сообщения, в БД в таблицу channels:
             channel_id = connection.execute(select([channels.c.id]).where(channels.c.channel == dialog.entity.id)).fetchone()
             if not channel_id:  # Если канала в БД нет, то добавляем его в таблицу channels
-                print(f'Канала с id={dialog.entity.id} нет в таблице channels. Добавляем его в таблицу.')
+                logging(f'Канала с id={dialog.entity.id} нет в таблице channels. Добавляем его в таблицу.')
                 await add_to_channels(dialog.entity, account_id, connection, metadata)
                 await avatar_download(dialog.entity, client, connection, metadata)  # скачивание и внесение в БД аватара
 
@@ -385,7 +384,6 @@ async def get_dialogs(account_id, connection, metadata, command_id=None):
             )
             answer_from_db = connection.execute(query).fetchone()
             last_check_date = answer_from_db[0] if answer_from_db and not command_id else datetime(1982, 11, 5)
-            print(dialog.name)
             # Заносим новое время обновления сообщений диалога в таблицу channels
             connection.execute(update(channels).where(and_(
                 channels.c.channel == dialog.entity.id,
@@ -420,11 +418,9 @@ async def get_dialogs(account_id, connection, metadata, command_id=None):
                             messages_send.c.id_of_telegram == message.id,
                             messages_send.c.channel_id == dialog.entity.id)))
 
-                    except AttributeError:
-                        print(AttributeError)
-                        print('Что-то не так с from_id из сообщения:')
-                        print(message)
-                    # Если в сообщении есть файл, то скачативаем его
+                    except AttributeError as e:
+                        logging(f'Что-то не так с from_id из сообщения: \n{e}', message)
+                    # Если в сообщении есть файл, то скачиваем его
                     if message.media:
                         await file_download(message, dialog, client, account_id, connection, metadata)
 
@@ -433,15 +429,14 @@ async def get_dialogs(account_id, connection, metadata, command_id=None):
                 else:
                     break
         end_time = datetime.now()
-        print(f'Время проверки и скачивания сообщений для пользователя с id {account_id} составило {end_time - start_time}')
+        logging(f'Время проверки и скачивания сообщений для пользователя с id {account_id} составило {end_time - start_time}')
         # Добавление в таблицу accounts даты последней проверки новых сообщений:
         connection.execute(update(accounts).where(accounts.c.id == account_id).values(new_messages_last_check=end_time))
         if command_id:
             # Перевод команды в status=1 (выполнена):
             connection.execute(update(commands).where(commands.c.id == command_id).values(status=1))
     except Exception as e:
-        print(f'При выполнении команды get_dialogs либо поиске новых сообщений для аккаунта с id={account_id} возникли проблемы')
-        print(e)
+        logging(f'При выполнении команды get_dialogs либо поиске новых сообщений для аккаунта с id={account_id} возникли проблемы: \n{e}')
         if command_id:
             # Перевод команды в status=2 (возникла проблема):
             connection.execute(update(commands).where(commands.c.id == command_id).values(status=2))
@@ -536,7 +531,6 @@ async def send_message(account_id, arguments, connection, metadata, command_id, 
     # Разбиваем сообщение на текст и файлы и вносим по одному в таблицу messages_send:
     try:
         arguments = json.loads(arguments)
-        print(arguments)
         if arguments['message_text']:
             connection.execute(insert(messages_send).values(
                 channel_id=str(arguments['to_channel/code']),
@@ -760,7 +754,7 @@ async def main():
 
     # Подключение к базе данных и настройка SQL Alchemy
     # --------------------------------------------------
-    print('Подключение к БД')
+    logging('Подключение к БД')
     host = os.environ.get('HOST')
     user = os.environ.get('USERNAME')
     password = os.environ.get('PASSWORD')
@@ -818,7 +812,6 @@ async def main():
                     logging(f'Запущена процедура отправки сообщений для аккаунта с id={account_id}')
                     await send_message(account_id, command_args, connection, metadata, command_id, command_date)
                 # -------------
-        # print('Цикл поиска команд завершен')
         # --------------------------------------------------
 
         # Отслеживание новых сообщений для активных аккаунтов (status = 1 в таблице accounts из БД)
@@ -828,10 +821,9 @@ async def main():
         active_accounts = connection.execute(query)  # Создаем список активных аккаунтов, скаченных из БД
         if active_accounts:  # Если есть активные аккаунты, то для каждого проверяем наличие новых сообщений в Telegram:
             for account in active_accounts:
-                # print(f'Аккаунт с id={account[0]} и name = {account[1]} активен. Начинается проверка новых сообщений.')
+                logging(f'Аккаунт с id={account[0]} и name = {account[1]} активен. Начинается проверка новых сообщений.')
                 account_id = account[0]
                 await get_dialogs(account_id, connection, metadata)
-        # print('Цикл поиска новых сообщений для активных аккаунтов завершен')
         # --------------------------------------------------
 
 if __name__=='__main__':
