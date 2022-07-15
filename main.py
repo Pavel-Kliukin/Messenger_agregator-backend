@@ -154,7 +154,8 @@ async def add_to_channels(entity, account_id, connection, metadata):
             username=entity.username if entity_type not in ('Chat', 'ChatForbidden', 'ChatEmpty') else None,
             phone=entity.phone if entity_type is 'User' else None,
             type_channel=channel_type,
-            can_view_participants=entity.participants_count if entity_type in ('Chat', 'Channel') else None,
+            cnt=entity.participants_count if entity_type in ('Chat', 'Channel') else None,
+            can_view_participants=1 if entity_type in ('Chat', 'Channel') and entity.participants_count else 2,
             created_at=entity.date if entity_type in ('Chat', 'Channel') else None
         )
         connection.execute(query)  # Отправление команды в БД
@@ -258,6 +259,9 @@ async def avatar_download(entity, client, connection, metadata):
 # Скачивание всех аватарок на сервер
 async def get_avatars(account_id, connection, metadata, command_id):
     commands = Table('commands', metadata)
+    # Перевод команды в status=3 (команда выполняется):
+    connection.execute(update(commands).where(commands.c.id == command_id).values(status=3))
+
     client = await connect_to_telegram(account_id)
     try:
         await client.connect()
@@ -277,6 +281,9 @@ async def get_avatars(account_id, connection, metadata, command_id):
 # Добавление ВСЕХ диалогов (с человеком или ботом), чатов и каналов пользователя в таблицу channels базы данных
 async def get_all(account_id, connection, metadata, command_id):
     commands = Table('commands', metadata)
+    # Перевод команды в status=3 (команда выполняется):
+    connection.execute(update(commands).where(commands.c.id == command_id).values(status=3))
+
     client = await connect_to_telegram(account_id)
     try:
         await client.connect()
@@ -297,6 +304,8 @@ async def get_all(account_id, connection, metadata, command_id):
 # Добавление только контактов пользователя в БД в таблицу messenger_users
 async def get_contacts(account_id, connection, metadata, command_id):
     commands = Table('commands', metadata)
+    # Перевод команды в status=3 (команда выполненяется):
+    connection.execute(update(commands).where(commands.c.id == command_id).values(status=3))
     client = await connect_to_telegram(account_id)
     try:
         await client.connect()
@@ -351,6 +360,10 @@ async def get_dialogs(account_id, connection, metadata, command_id=None):
     table_messages = Table('messages', metadata)
     channels = Table('channels', metadata)
 
+    if command_id:  # если функция get_dialogs была запущена командой get_dialogs, а не поиском новых сообщений, то:
+        # Перевод команды в status=3 (выполняется):
+        connection.execute(update(commands).where(commands.c.id == command_id).values(status=3))
+
     client = await connect_to_telegram(account_id)
     try:
         await client.connect()
@@ -371,7 +384,7 @@ async def get_dialogs(account_id, connection, metadata, command_id=None):
                 channels.c.account_id == account_id)
             )
             answer_from_db = connection.execute(query).fetchone()
-            last_check_date = answer_from_db[0] if answer_from_db else datetime(1982, 11, 5)
+            last_check_date = answer_from_db[0] if answer_from_db and not command_id else datetime(1982, 11, 5)
             print(dialog.name)
             # Заносим новое время обновления сообщений диалога в таблицу channels
             connection.execute(update(channels).where(and_(
@@ -438,6 +451,9 @@ async def get_dialogs(account_id, connection, metadata, command_id=None):
 # Скачивание БОЛЬШИХ файлов
 async def get_big_files(account_id, connection, metadata, command_id):
     commands = Table('commands', metadata)
+    # Перевод команды в status=3 (выполняется):
+    connection.execute(update(commands).where(commands.c.id == command_id).values(status=3))
+
     client = await connect_to_telegram(account_id)
     try:
         await client.connect()
@@ -507,11 +523,13 @@ async def get_big_files(account_id, connection, metadata, command_id):
 
 # Отправка сообщений:
 async def send_message(account_id, arguments, connection, metadata, command_id, command_date):
-
-    # Разбиваем сообщение на текст и файлы и вносим по одному в таблицу messages_send:
     commands = Table('commands', metadata)
     messages_send = Table('messages_send', metadata)
+    # Перевод команды в status=3 (выполняется):
+    connection.execute(update(commands).where(commands.c.id == command_id).values(status=3))
     client = await connect_to_telegram(account_id)
+
+    # Разбиваем сообщение на текст и файлы и вносим по одному в таблицу messages_send:
     try:
         arguments = json.loads(arguments)
         print(arguments)
