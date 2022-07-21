@@ -91,8 +91,10 @@ async def login_finish(account_id, argument, connection, metadata, command_id, t
 
         if await client.is_user_authorized():
             logging(f'Авторизация в Телеграм пользователя с id={account_id} прошла успешно')
-            # Перевод аккаунта в status=1 (аккаунт активен):
-            connection.execute(update(accounts).where(accounts.c.id == account_id).values(status=1))
+            # Перевод аккаунта в status=1 (аккаунт активен) и добавление времени активации в new_messages_last_check:
+            connection.execute(update(accounts).where(
+                accounts.c.id == account_id).values(status=1,
+                                                    new_messages_last_check=datetime.now()))
             # Перевод команды login_code либо login_2f в status=1 (команда выполнена):
             connection.execute(update(commands).where(commands.c.id == command_id).values(status=1))
             # Удаление кода из колонки code таблицы accounts:
@@ -370,20 +372,26 @@ async def get_dialogs(account_id, connection, metadata, command_id=None):
 
         async for dialog in client.iter_dialogs():
 
-            # Провекрка занесен ли канал, из которого мы скачиваем сообщения, в БД в таблицу channels:
+            # Проверка занесен ли канал, из которого мы скачиваем сообщения, в БД в таблицу channels:
             channel_id = connection.execute(select([channels.c.id]).where(channels.c.channel == dialog.entity.id)).fetchone()
             if not channel_id:  # Если канала в БД нет, то добавляем его в таблицу channels
                 logging(f'Канала с id={dialog.entity.id} нет в таблице channels. Добавляем его в таблицу.')
                 await add_to_channels(dialog.entity, account_id, connection, metadata)
                 await avatar_download(dialog.entity, client, connection, metadata)  # скачивание и внесение в БД аватара
 
-            # last_check_date - время последнего обновления сообщений диалога (берётся из канала channels):
-            query = select([channels.c.lst_msgs_upd]).where(and_(
-                channels.c.channel == dialog.entity.id,
-                channels.c.account_id == account_id)
-            )
-            answer_from_db = connection.execute(query).fetchone()
-            last_check_date = answer_from_db[0] if answer_from_db and not command_id else datetime(1982, 11, 5)
+            # Определяем, начиная с какой даты (времени) надо скачивать сообщения:
+            if command_id:  # если функция запущена командой get_dialogs:
+                last_check_date = datetime(1982, 11, 5)  # то берём очень старую дату (скачиваем ВСЕ сообщения)
+            else:  # если функция запущена поиском новых сообщений:
+                # то либо берём дату последнего обновления канала
+                last_channels_upd = connection.execute(select([channels.c.lst_msgs_upd]).where(and_(
+                    channels.c.channel == dialog.entity.id,
+                    channels.c.account_id == account_id)
+                )).fetchone()
+                acc_activated_date = connection.execute(select([accounts.c.new_messages_last_check]).where(
+                    id == account_id)).fetchone()[0]
+                # либо, если пользователь только что был активирован, то берём дату активации
+                last_check_date = last_channels_upd[0] if last_channels_upd else acc_activated_date
             # Заносим новое время обновления сообщений диалога в таблицу channels
             connection.execute(update(channels).where(and_(
                 channels.c.channel == dialog.entity.id,
