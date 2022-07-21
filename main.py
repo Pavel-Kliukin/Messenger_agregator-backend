@@ -196,6 +196,18 @@ async def file_download(message, dialog, client, account_id, connection, metadat
         if file_name and not file_extension:
             file_extension = os.path.splitext(file_name)[1].replace('.', '').lower()
 
+        if message.from_id:  # Определение from_id
+            try:
+                from_id = message.from_id.user_id
+            except AttributeError:
+                try:
+                    from_id = message.from_id.channel_id
+                except Exception as e:
+                    logging(f'Что-то не так с from_id gри скачивании файла из сообщения. Ошибка: \n{e}', message)
+                    from_id = None
+        else:
+            from_id = dialog.entity.id
+
         query = insert(message_files).values(
             message_id=message.id,
             account_id=account_id,
@@ -208,7 +220,7 @@ async def file_download(message, dialog, client, account_id, connection, metadat
             src=message.media.to_json(),
             fn_ext=file_extension,
             mime=mimetypes.guess_type(file_path)[0] if file_path else message.media.document.mime_type,
-            from_id=message.from_id.user_id if message.from_id else dialog.entity.id,
+            from_id=from_id,
             from_name=get_display_name(await client.get_entity(message.from_id.user_id if message.from_id else dialog.entity.id)),
             created_at=downloaded_at if downloaded_at else datetime.now(),
             downloaded_at=downloaded_at if downloaded_at else None
@@ -399,8 +411,7 @@ async def get_dialogs(account_id, connection, metadata, command_id=None):
                     channels.c.account_id == account_id)
                 )).fetchone()
                 acc_activated_date = connection.execute(select([accounts.c.new_messages_last_check]).where(
-                    id == account_id)).fetchone()
-                print(f'acc_activated_date = {acc_activated_date} для аккаунта с id={account_id}')
+                    accounts.c.id == account_id)).fetchone()
                 # либо, если пользователь только что был активирован, то берём дату активации
                 last_check_date = last_channels_upd[0] if last_channels_upd else acc_activated_date
             # Заносим новое время обновления сообщений диалога в таблицу channels
@@ -412,33 +423,41 @@ async def get_dialogs(account_id, connection, metadata, command_id=None):
                 msg_date = message.date.replace(tzinfo=timezone.utc).astimezone(tz=None)
                 if msg_date.timestamp() > last_check_date.timestamp():  # Если дата сообщения > даты последней проверки сообщений, то скачиваем его
                     # Создание команды в БД на добавление сообщения в таблицу messages:
-                    try:
-                        from_id = message.from_id.user_id if message.from_id else dialog.entity.id
-                        query = insert(table_messages).values(
-                            bot_id=dialog.entity.id if isinstance(dialog.entity, User) and dialog.entity.bot else None,
-                            account_id=account_id,
-                            message_id=message.id,
-                            channel_id_our=connection.execute(select([channels]).where(channels.c.channel == dialog.entity.id)).fetchone()[0],
-                            channel_id=dialog.entity.id,
-                            channel_name=connection.execute(select([channels]).where(channels.c.channel == dialog.entity.id)).fetchone()[4],
-                            msg_date=msg_date,
-                            napr=1 if message.out else 2,
-                            from_id=from_id,
-                            from_name=get_display_name(await client.get_entity(message.from_id.user_id if message.from_id else dialog.entity.id)),
-                            message=message.message,
-                            src=json.dumps(message.to_dict(), default=str, ensure_ascii=False),
-                            created_at=datetime.now()
-                        )
-                        connection.execute(query)  # Отправление команды в БД
+                    if message.from_id:  # Определение from_id
+                        try:
+                            from_id = message.from_id.user_id
+                        except AttributeError:
+                            try:
+                                from_id = message.from_id.channel_id
+                            except Exception as e:
+                                logging(f'Что-то не так с from_id из сообщения. Ошибка: \n{e}', message)
+                                from_id = None
+                    else:
+                        from_id = dialog.entity.id
 
-                        #  Проверка, является ли сообщение отправленным из таблицы message_send:
-                        #  Если является, то удаляем его из таблицы message_send
-                        connection.execute(delete(messages_send).where(and_(
-                            messages_send.c.id_of_telegram == message.id,
-                            messages_send.c.channel_id == dialog.entity.id)))
+                    query = insert(table_messages).values(
+                        bot_id=dialog.entity.id if isinstance(dialog.entity, User) and dialog.entity.bot else None,
+                        account_id=account_id,
+                        message_id=message.id,
+                        channel_id_our=connection.execute(select([channels]).where(channels.c.channel == dialog.entity.id)).fetchone()[0],
+                        channel_id=dialog.entity.id,
+                        channel_name=connection.execute(select([channels]).where(channels.c.channel == dialog.entity.id)).fetchone()[4],
+                        msg_date=msg_date,
+                        napr=1 if message.out else 2,
+                        from_id=from_id,
+                        from_name=get_display_name(await client.get_entity(message.from_id.user_id if message.from_id else dialog.entity.id)),
+                        message=message.message,
+                        src=json.dumps(message.to_dict(), default=str, ensure_ascii=False),
+                        created_at=datetime.now()
+                    )
+                    connection.execute(query)  # Отправление команды в БД
 
-                    except AttributeError as e:
-                        logging(f'Что-то не так с from_id из сообщения: \n{e}', message)
+                    #  Проверка, является ли сообщение отправленным из таблицы message_send:
+                    #  Если является, то удаляем его из таблицы message_send
+                    connection.execute(delete(messages_send).where(and_(
+                        messages_send.c.id_of_telegram == message.id,
+                        messages_send.c.channel_id == dialog.entity.id)))
+
                     # Если в сообщении есть файл, то скачиваем его
                     if message.media:
                         await file_download(message, dialog, client, account_id, connection, metadata)
@@ -454,7 +473,7 @@ async def get_dialogs(account_id, connection, metadata, command_id=None):
         if command_id:
             # Перевод команды в status=1 (выполнена):
             connection.execute(update(commands).where(commands.c.id == command_id).values(status=1))
-    except SessionPasswordNeededError as e:
+    except Exception as e:
         logging(f'При выполнении команды get_dialogs либо поиске новых сообщений для аккаунта с id={account_id} возникли проблемы: \n{e}')
         if command_id:
             # Перевод команды в status=2 (возникла проблема):
