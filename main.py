@@ -122,6 +122,7 @@ async def connect_to_telegram(account_id):
 # Добавление ОДНОГО диалога (с человеком или ботом), чата или канала в таблицу channels базы данных
 async def add_to_channels(entity, account_id, connection, metadata):
     channels = Table('channels', metadata)
+    accounts = Table('accounts', metadata)
 
     # Проверка, есть ли уже такая запись в таблице channels:
     query = select(channels).where(
@@ -157,13 +158,16 @@ async def add_to_channels(entity, account_id, connection, metadata):
             can_view_participants=1 if entity_type in ('Chat', 'Channel') and entity.participants_count else 2,
             created_at=entity.date if entity_type in ('Chat', 'Channel') else None
         )
-        connection.execute(query)  # Отправление команды в БД
+        connection.execute(query)  # отправление команды в БД
+        # Обновление для аккаунта времени последнего взаимодействия с Телеграмом:
+        connection.execute(update(accounts).where(accounts.c.id == account_id).values(last_used_at=datetime.now()))
 
 
 # Скачивание файла из сообщения и занесение информации в БД (большие файлы НЕ скачиваются, о них только заносится инф.)
 async def file_download(message, dialog, client, account_id, connection, metadata):
     table_messages = Table('messages', metadata)
     message_files = Table('message_files', metadata)
+    accounts = Table('accounts', metadata)
 
     if isinstance(message.media, (MessageMediaPhoto, MessageMediaDocument)):
 
@@ -225,11 +229,15 @@ async def file_download(message, dialog, client, account_id, connection, metadat
             table_messages.c.channel_id == dialog.entity.id)
         ).values(files=files))
 
+        # Обновление для аккаунта времени последнего взаимодействия с Телеграмом:
+        connection.execute(update(accounts).where(accounts.c.id == account_id).values(last_used_at=datetime.now()))
+
 
 # Скачивание ОДНОЙ аватарки (с удалением старой, если она существовала)
-async def avatar_download(entity, client, connection, metadata):
+async def avatar_download(account_id, entity, client, connection, metadata):
     channels = Table('channels', metadata)
     messenger_users = Table('messenger_users', metadata)
+    accounts = Table('accounts', metadata)
     try:
         if entity.photo:
             avatar_path = f'avatars/{entity.id}.jpg'
@@ -249,6 +257,8 @@ async def avatar_download(entity, client, connection, metadata):
                 connection.execute(update(messenger_users).where(messenger_users.c.peer_id == entity.id).values(fn_avatar=f'avatars/{entity.id}.jpg'))
     except AttributeError as e:
         logging(f'При скачивании аватарки возникли проблемы (AttributeError): \n{e}', entity)
+    # Обновление для аккаунта времени последнего взаимодействия с Телеграмом:
+    connection.execute(update(accounts).where(accounts.c.id == account_id).values(last_used_at=datetime.now()))
 
 
 # Скачивание всех аватарок на сервер
@@ -262,7 +272,7 @@ async def get_avatars(account_id, connection, metadata, command_id):
         await client.connect()
         async for dialog in client.iter_dialogs():
             entity = dialog.entity
-            await avatar_download(entity, client, connection, metadata)
+            await avatar_download(account_id, entity, client, connection, metadata)
         # Перевод команды в status=1 (команда выполнена):
         connection.execute(update(commands).where(commands.c.id == command_id).values(status=1))
     except Exception as e:
@@ -532,6 +542,7 @@ async def get_big_files(account_id, connection, metadata, command_id):
 async def send_message(account_id, arguments, connection, metadata, command_id, command_date):
     commands = Table('commands', metadata)
     messages_send = Table('messages_send', metadata)
+    accounts = Table('accounts', metadata)
     # Перевод команды в status=3 (выполняется):
     connection.execute(update(commands).where(commands.c.id == command_id).values(status=3))
     client = await connect_to_telegram(account_id)
@@ -745,6 +756,8 @@ async def send_message(account_id, arguments, connection, metadata, command_id, 
         logging(f'При выполнении команды отправки сообщения с id={command_id} возникли проблемы: \n{e}')
         # Перевод команды в status=2 (возникла проблема):
         connection.execute(update(commands).where(commands.c.id == command_id).values(status=2))
+    # Обновление для аккаунта времени последнего взаимодействия с Телеграмом:
+    connection.execute(update(accounts).where(accounts.c.id == account_id).values(last_used_at=datetime.now()))
     await client.disconnect()
 
 
