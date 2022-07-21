@@ -400,6 +400,7 @@ async def get_dialogs(account_id, connection, metadata, command_id=None):
                 )).fetchone()
                 acc_activated_date = connection.execute(select([accounts.c.new_messages_last_check]).where(
                     id == account_id)).fetchone()[0]
+                print(acc_activated_date)
                 # либо, если пользователь только что был активирован, то берём дату активации
                 last_check_date = last_channels_upd[0] if last_channels_upd else acc_activated_date
             # Заносим новое время обновления сообщений диалога в таблицу channels
@@ -453,7 +454,7 @@ async def get_dialogs(account_id, connection, metadata, command_id=None):
         if command_id:
             # Перевод команды в status=1 (выполнена):
             connection.execute(update(commands).where(commands.c.id == command_id).values(status=1))
-    except SessionPasswordNeededError as e: 
+    except SessionPasswordNeededError as e:
         logging(f'При выполнении команды get_dialogs либо поиске новых сообщений для аккаунта с id={account_id} возникли проблемы: \n{e}')
         if command_id:
             # Перевод команды в status=2 (возникла проблема):
