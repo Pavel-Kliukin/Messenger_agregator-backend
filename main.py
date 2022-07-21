@@ -50,8 +50,8 @@ async def login_finish(account_id, argument, connection, metadata, command_id, t
         code = json.loads(argument)['to_channel/code']
         phone = '+' + connection.execute(select([accounts.c.login]).where(accounts.c.id == account_id)).fetchone()[0]
         if two_factor_verification:
-            # Занесение кода в колонку pass2faedited таблицы accounts:
-            connection.execute(update(accounts).where(accounts.c.id == account_id).values(pass2faedited=code))
+            # Занесение кода в колонку pass2fa таблицы accounts:
+            connection.execute(update(accounts).where(accounts.c.id == account_id).values(pass2fa=code))
         else:
             # Занесение кода в колонку code таблицы accounts:
             connection.execute(update(accounts).where(accounts.c.id == account_id).values(code=code))
@@ -65,7 +65,7 @@ async def login_finish(account_id, argument, connection, metadata, command_id, t
             # Перевод команды login_code либо login_2f в status=1 (команда выполнена):
             connection.execute(update(commands).where(commands.c.id == command_id).values(status=1))
             if two_factor_verification:
-                code_2fa = connection.execute(select([accounts.c.pass2faedited]).where(accounts.c.id == account_id)).fetchone()[0]
+                code_2fa = connection.execute(select([accounts.c.pass2fa]).where(accounts.c.id == account_id)).fetchone()[0]
                 await client.sign_in(password=code_2fa)
             else:
                 # Перевод аккаунта в status=5 (ждёт код авторизации):
@@ -81,7 +81,7 @@ async def login_finish(account_id, argument, connection, metadata, command_id, t
                 # Перевод команды login_code либо login_2f в status=1 (команда выполнена):
                 connection.execute(update(commands).where(commands.c.id == command_id).values(status=1))
                 if two_factor_verification:
-                    code_2fa = connection.execute(select([accounts.c.pass2faedited]).where(accounts.c.id == account_id)).fetchone()[0]
+                    code_2fa = connection.execute(select([accounts.c.pass2fa]).where(accounts.c.id == account_id)).fetchone()[0]
                     await client.sign_in(password=code_2fa)
                 else:
                     # Перевод аккаунта в status=5 (ждёт код авторизации):
