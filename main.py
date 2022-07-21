@@ -297,7 +297,7 @@ async def get_all(account_id, connection, metadata, command_id):
         async for dialog in client.iter_dialogs():
             entity = dialog.entity
             await add_to_channels(entity, account_id, connection, metadata)
-            await avatar_download(entity, client, connection, metadata)  # Скачивание (обновление) аватара
+            await avatar_download(account_id, entity, client, connection, metadata)  # Скачивание (обновление) аватара
         # Перевод команды в status=1 (команда выполнена):
         connection.execute(update(commands).where(commands.c.id == command_id).values(status=1))
     except Exception as e:
@@ -350,7 +350,7 @@ async def get_contacts(account_id, connection, metadata, command_id):
             )
             connection.execute(query)  # Отправление команды в БД
 
-            await avatar_download(contact, client, connection, metadata)  # Скачивание (обновление) аватара:
+            await avatar_download(account_id, contact, client, connection, metadata)  # Скачивание (обновление) аватара:
         # Перевод команды в status=1 (выполнена):
         connection.execute(update(commands).where(commands.c.id == command_id).values(status=1))
     except Exception as e:
@@ -387,7 +387,7 @@ async def get_dialogs(account_id, connection, metadata, command_id=None):
             if not channel_id:  # Если канала в БД нет, то добавляем его в таблицу channels
                 logging(f'Канала с id={dialog.entity.id} нет в таблице channels. Добавляем его в таблицу.')
                 await add_to_channels(dialog.entity, account_id, connection, metadata)
-                await avatar_download(dialog.entity, client, connection, metadata)  # скачивание и внесение в БД аватара
+                await avatar_download(account_id, dialog.entity, client, connection, metadata)  # скачивание и внесение в БД аватара
 
             # Определяем, начиная с какой даты (времени) надо скачивать сообщения:
             if command_id:  # если функция запущена командой get_dialogs:
@@ -400,7 +400,7 @@ async def get_dialogs(account_id, connection, metadata, command_id=None):
                 )).fetchone()
                 acc_activated_date = connection.execute(select([accounts.c.new_messages_last_check]).where(
                     id == account_id)).fetchone()
-                print(acc_activated_date)
+                print(f'acc_activated_date = {acc_activated_date} для аккаунта с id={account_id}')
                 # либо, если пользователь только что был активирован, то берём дату активации
                 last_check_date = last_channels_upd[0] if last_channels_upd else acc_activated_date
             # Заносим новое время обновления сообщений диалога в таблицу channels
@@ -444,7 +444,7 @@ async def get_dialogs(account_id, connection, metadata, command_id=None):
                         await file_download(message, dialog, client, account_id, connection, metadata)
 
                     entity = await client.get_entity(from_id)
-                    await avatar_download(entity, client, connection, metadata)  # скачивание и внесение в БД аватара
+                    await avatar_download(account_id, entity, client, connection, metadata)  # скачивание и внесение в БД аватара
                 else:
                     break
         end_time = datetime.now()
