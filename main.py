@@ -399,7 +399,7 @@ async def get_dialogs(account_id, connection, metadata, command_id=None):
                     channels.c.account_id == account_id)
                 )).fetchone()
                 acc_activated_date = connection.execute(select([accounts.c.new_messages_last_check]).where(
-                    id == account_id)).fetchone()[0]
+                    id == account_id)).fetchone()
                 print(acc_activated_date)
                 # либо, если пользователь только что был активирован, то берём дату активации
                 last_check_date = last_channels_upd[0] if last_channels_upd else acc_activated_date
