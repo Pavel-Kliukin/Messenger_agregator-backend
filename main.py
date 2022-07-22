@@ -439,7 +439,7 @@ async def get_dialogs(account_id, connection, metadata, command_id=None):
                         msg_date=msg_date,
                         napr=1 if message.out else 2,
                         from_id=from_id,
-                        from_name=get_display_name(await client.get_entity(message.from_id.user_id if message.from_id else dialog.entity.id)),
+                        from_name=get_display_name(await client.get_entity(from_id)),
                         message=message.message,
                         src=json.dumps(message.to_dict(), default=str, ensure_ascii=False),
                         created_at=datetime.now()
