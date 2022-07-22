@@ -1,5 +1,4 @@
 import os
-import time
 import json
 import asyncio
 import mimetypes
@@ -414,11 +413,6 @@ async def get_dialogs(account_id, connection, metadata, command_id=None):
                     accounts.c.id == account_id)).fetchone()
                 # либо, если пользователь только что был активирован, то берём дату активации
                 last_check_date = last_channels_upd[0] if last_channels_upd else acc_activated_date
-            # Заносим новое время обновления сообщений диалога в таблицу channels
-            connection.execute(update(channels).where(and_(
-                channels.c.channel == dialog.entity.id,
-                channels.c.account_id == account_id)
-            ).values(lst_msgs_upd=datetime.now()))
             async for message in client.iter_messages(dialog):
                 msg_date = message.date.replace(tzinfo=timezone.utc).astimezone(tz=None)
                 if msg_date.timestamp() > last_check_date.timestamp():  # Если дата сообщения > даты последней проверки сообщений, то скачиваем его
@@ -466,6 +460,18 @@ async def get_dialogs(account_id, connection, metadata, command_id=None):
                     await avatar_download(account_id, entity, client, connection, metadata)  # скачивание и внесение в БД аватара
                 else:
                     break
+            # Заносим новое время обновления сообщений диалога в таблицу channels
+            connection.execute(update(channels).where(and_(
+                channels.c.channel == dialog.entity.id,
+                channels.c.account_id == account_id)
+            ).values(lst_msgs_upd=datetime.now()))
+            # Заносим время последнего сообщения (date_last_message) диалога в таблицу channels
+            async for message in client.iter_messages(dialog):
+                connection.execute(update(channels).where(and_(
+                    channels.c.channel == dialog.entity.id,
+                    channels.c.account_id == account_id)
+                ).values(date_last_message=message.date.replace(tzinfo=timezone.utc).astimezone(tz=None)))
+                break
         end_time = datetime.now()
         logging(f'Время проверки и скачивания сообщений для пользователя с id {account_id} составило {end_time - start_time}')
         # Добавление в таблицу accounts даты последней проверки новых сообщений:
