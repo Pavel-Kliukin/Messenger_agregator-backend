@@ -10,7 +10,7 @@ from telethon.tl.types import User, Dialog, Channel, Chat, UserStatusOffline, Us
     UserStatusLastMonth, UserStatusLastWeek, PeerChannel, PeerChat, PeerUser, Message, MessageMediaUnsupported, \
     MessageMediaWebPage, MessageMediaPhoto, MessageMediaDocument, MessageMediaPoll, DocumentAttributeFilename
 from telethon.utils import get_display_name
-from telethon.errors import SessionPasswordNeededError, MediaInvalidError
+from telethon.errors import SessionPasswordNeededError, MediaInvalidError, ChannelPrivateError
 
 
 # Начало авторизации пользователя в Телеграм
@@ -479,7 +479,7 @@ async def get_dialogs(account_id, connection, metadata, command_id=None):
         if command_id:
             # Перевод команды в status=1 (выполнена):
             connection.execute(update(commands).where(commands.c.id == command_id).values(status=1))
-    except SessionPasswordNeededError as e:
+    except ChannelPrivateError as e:
         logging(f'При выполнении команды get_dialogs либо поиске новых сообщений для аккаунта с id={account_id} возникли проблемы: \n{e}')
         if command_id:
             # Перевод команды в status=2 (возникла проблема):
