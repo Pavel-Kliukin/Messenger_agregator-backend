@@ -220,7 +220,7 @@ async def file_download(message, dialog, client, account_id, connection, metadat
             fn_ext=file_extension,
             mime=mimetypes.guess_type(file_path)[0] if file_path else message.media.document.mime_type,
             from_id=from_id,
-            from_name=get_display_name(await client.get_entity(message.from_id.user_id if message.from_id else dialog.entity.id)),
+            from_name=get_display_name(await client.get_entity(from_id)),
             created_at=downloaded_at if downloaded_at else datetime.now(),
             downloaded_at=downloaded_at if downloaded_at else None
         )
