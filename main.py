@@ -479,7 +479,9 @@ async def get_dialogs(account_id, connection, metadata, command_id=None):
         if command_id:
             # Перевод команды в status=1 (выполнена):
             connection.execute(update(commands).where(commands.c.id == command_id).values(status=1))
-    except ChannelPrivateError as e:
+    except ValueError as e:
+        logging(f'При выполнении команды get_dialogs либо поиске новых сообщений для аккаунта с id={account_id} возникла ошибка ValueError: \n{e}', message, dialog)
+    except Exception as e:
         logging(f'При выполнении команды get_dialogs либо поиске новых сообщений для аккаунта с id={account_id} возникли проблемы: \n{e}')
         if command_id:
             # Перевод команды в status=2 (возникла проблема):
@@ -787,12 +789,15 @@ async def send_message(account_id, arguments, connection, metadata, command_id, 
     await client.disconnect()
 
 
-def logging(text, entity=None):
+def logging(text, entity=None, entity2=None):
     with open('our_logs.txt', 'a') as logs:
         logs.write(str(datetime.now())+'\n')
         logs.write(text+'\n')
         if entity:
             logs.write(str(entity))
+        logs.write('\n')
+        if entity2:
+            logs.write(str(entity2))
         logs.write('\n')
 
 
