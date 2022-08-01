@@ -1,6 +1,7 @@
 import os
 import json
 import asyncio
+import argparse
 import mimetypes
 from dotenv import load_dotenv
 from datetime import datetime, timezone
@@ -790,22 +791,24 @@ async def send_message(account_id, arguments, connection, metadata, command_id, 
 
 
 def logging(text, entity=None, entity2=None):
-    with open('our_logs.txt', 'a') as logs:
-        logs.write(str(datetime.now())+'\n')
-        logs.write(text+'\n')
-        if entity:
-            logs.write(str(entity))
-        logs.write('\n')
-        if entity2:
-            logs.write(str(entity2))
-        logs.write('\n')
+    try:
+        with open('our_logs.txt', 'a') as logs:
+            logs.write(str(datetime.now())+'\n')
+            logs.write(text+'\n')
+            if entity:
+                logs.write(str(entity))
+            logs.write('\n')
+            if entity2:
+                logs.write(str(entity2))
+            logs.write('\n')
+    except Exception as e:
+        print(f'Не удалось сделать запись в our_logs.txt. Ошибка: \n{e}')
 
 
 async def main():
     load_dotenv('user.env')  # load_dotenv загружает из файла user.env переменные среды
 
     # Подключение к базе данных и настройка SQL Alchemy
-    # --------------------------------------------------
     logging('Подключение к БД')
     host = os.environ.get('HOST')
     user = os.environ.get('USERNAME')
@@ -815,68 +818,73 @@ async def main():
     connection = engine.connect()
     metadata = MetaData()
     metadata.reflect(bind=engine)  # Отображение ("подгрузка") всех уже существующих таблиц из БД
-    # --------------------------------------------------
+    # Связываем переменные accounts и commands с таблицами 'accounts' и 'commands' из БД:
+    accounts = Table('accounts', metadata)
+    commands = Table('commands', metadata)
 
-    while True:
+    # Парсинг id команды, переданных из start.py
+    parser = argparse.ArgumentParser()
+    parser.add_argument('id_type', type=int, help='id_type')
+    parser.add_argument('id', type=int, help='id')
+    args = parser.parse_args()
 
-        # Отслеживание команд в таблице commands из БД:
-        # --------------------------------------------------
-        commands_list = []
-        commands = Table('commands', metadata)  # связываем переменную commands с таблицей 'commands' из БД
-        try:
-            query = commands.select().where(commands.c.status == 0)  # Выбираем из БД команды со status=0 (новые)
-            commands_list = connection.execute(query)  # Создаем список команд, скаченных из БД
-        except Exception as e:
-            logging(f'Не удалось получить данные из таблицы commands базы данных. Попытка повторится в следующем цикле. \n{e}')
-        if commands_list:  # Если список не пустой (в БД были команды), то отправляем команды на выполнение:
-            for command in commands_list:
-                command_id = command[0]
-                command_name = command[1]
-                account_id = command[2]
-                command_args = command[3]
-                command_date = command[4]
-                # Перевод команды в status=3 (в процессе выполнения):
-                connection.execute(update(commands).where(commands.c.id == command_id).values(status=3))
-                # -------------
-                if command_name == 'login_start':
-                    logging(f'Запуск функции login_start для аккаунта с id={account_id}')
-                    await login_start(account_id, connection, metadata, command_id)
-                elif command_name == 'login_code':
-                    await login_finish(account_id, command_args, connection, metadata, command_id)
-                elif command_name == 'login_2f':
-                    await login_finish(account_id, command_args, connection, metadata, command_id, two_factor_verification=True)
-                elif command_name == 'get_avatars':
-                    logging(f'Запущена процедура скачивания всех аватарок для аккаунта с id={account_id}')
-                    await get_avatars(account_id, connection, metadata, command_id)
-                elif command_name == 'get_all':
-                    logging(f'Запущена процедура скачивания всех чатов (get_all) для аккаунта с id={account_id}')
-                    await get_all(account_id, connection, metadata, command_id)
-                elif command_name == 'get_contacts':
-                    logging(f'Запущена процедура скачивания всех контактов (get_contacts) для аккаунта с id={account_id}')
-                    await get_contacts(account_id, connection, metadata, command_id)
-                elif command_name == 'get_dialogs':
-                    logging(f'Запущена процедура скачивания всех сообщений (get_dialogs) для аккаунта с id={account_id}')
-                    await get_dialogs(account_id, connection, metadata, command_id)
-                elif command_name == 'get_big_files':
-                    logging(f'Запущена процедура скачивания больших файлов для аккаунта с id={account_id}')
-                    await get_big_files(account_id, connection, metadata, command_id)
-                elif command_name == 'send_message':
-                    logging(f'Запущена процедура отправки сообщений для аккаунта с id={account_id}')
-                    await send_message(account_id, command_args, connection, metadata, command_id, command_date)
-                # -------------
-        # --------------------------------------------------
+    id_type = args.id_type
 
-        # Отслеживание новых сообщений для активных аккаунтов (status = 1 в таблице accounts из БД)
-        # --------------------------------------------------
-        accounts = Table('accounts', metadata)  # связываем переменную accounts с таблицей 'accounts' из БД
-        query = select(accounts).where(accounts.c.status == 1)
-        active_accounts = connection.execute(query)  # Создаем список активных аккаунтов, скаченных из БД
-        if active_accounts:  # Если есть активные аккаунты, то для каждого проверяем наличие новых сообщений в Telegram:
-            for account in active_accounts:
-                logging(f'Аккаунт с id={account[0]} и name = {account[1]} активен. Начинается проверка новых сообщений.')
-                account_id = account[0]
-                await get_dialogs(account_id, connection, metadata)
-        # --------------------------------------------------
+    if id_type == 'command':
+        command_id = args.id
+        command = connection.execute(select(commands).where(commands.c.id == command_id)).fetchone()[0]
+
+        command_name = command[1]
+        account_id = command[2]
+        command_args = command[3]
+        command_date = command[4]
+
+        # Перевод слота аккаунта в положение 2 (занят модулем main.py):
+        connection.execute(update(accounts).where(accounts.c.id == account_id).values(slot=2))
+
+        if command_name == 'login_start':
+            logging(f'Запуск функции login_start для аккаунта с id={account_id}')
+            await login_start(account_id, connection, metadata, command_id)
+        elif command_name == 'login_code':
+            await login_finish(account_id, command_args, connection, metadata, command_id)
+        elif command_name == 'login_2f':
+            await login_finish(account_id, command_args, connection, metadata, command_id, two_factor_verification=True)
+        elif command_name == 'get_avatars':
+            logging(f'Запущена процедура скачивания всех аватарок для аккаунта с id={account_id}')
+            await get_avatars(account_id, connection, metadata, command_id)
+        elif command_name == 'get_all':
+            logging(f'Запущена процедура скачивания всех чатов (get_all) для аккаунта с id={account_id}')
+            await get_all(account_id, connection, metadata, command_id)
+        elif command_name == 'get_contacts':
+            logging(f'Запущена процедура скачивания всех контактов (get_contacts) для аккаунта с id={account_id}')
+            await get_contacts(account_id, connection, metadata, command_id)
+        elif command_name == 'get_dialogs':
+            logging(f'Запущена процедура скачивания всех сообщений (get_dialogs) для аккаунта с id={account_id}')
+            await get_dialogs(account_id, connection, metadata, command_id)
+        elif command_name == 'get_big_files':
+            logging(f'Запущена процедура скачивания больших файлов для аккаунта с id={account_id}')
+            await get_big_files(account_id, connection, metadata, command_id)
+        elif command_name == 'send_message':
+            logging(f'Запущена процедура отправки сообщений для аккаунта с id={account_id}')
+            await send_message(account_id, command_args, connection, metadata, command_id, command_date)
+
+        # Перевод слота аккаунта в положение 1 (свободен):
+        connection.execute(update(accounts).where(accounts.c.id == account_id).values(slot=1))
+
+    elif id_type == 'account':
+        accounts = Table('accounts', metadata)
+        account_id = args.id
+
+        # Перевод слота аккаунта в положение 2 (занят модулем main.py):
+        connection.execute(update(accounts).where(accounts.c.id == account_id).values(slot=2))
+
+        logging(f'Аккаунт с id={account_id} и активен и не занят. Начинается проверка новых сообщений.')
+        # Запуск скачивания новых сообщений:
+        await get_dialogs(account_id, connection, metadata)
+
+        # Перевод слота аккаунта в положение 2 (занят модулем main.py):
+        connection.execute(update(accounts).where(accounts.c.id == account_id).values(slot=2))
+
 
 if __name__=='__main__':
     asyncio.run(main())
